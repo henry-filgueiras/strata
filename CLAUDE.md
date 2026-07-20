@@ -179,6 +179,8 @@ Conventions:
 
 - use four-digit zero-padded display sequences;
 - use lowercase kebab-case filenames;
+- lifecycle metadata must agree with placement; files under `closed/` use
+  `status: closed`;
 - do not reuse deleted or moved sequence numbers;
 - do not renumber existing artifacts cosmetically;
 - prefer moving records to terminal states over deleting history;

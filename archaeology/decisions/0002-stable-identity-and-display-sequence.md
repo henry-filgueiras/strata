@@ -33,3 +33,18 @@ The exact metadata schema remains provisional during bootstrap.
 - Filename sequences may be repaired after branch collisions.
 - Links and machine operations should prefer stable identities.
 - Humans retain compact sortable filenames.
+
+## Update (2026-07-20): bootstrap identity policy
+
+Task 0003 settled the provisional schema for generated identities:
+
+- `id` is a single opaque stable string; there is no second identity field.
+- Strata-generated dragon IDs are `drg_` followed by a 26-character uppercase
+  Crockford base32 ULID, e.g. `drg_01K0P6W5PK8T19H7M2V8W6YQ4C`.
+- Hand-seeded IDs predating generation (e.g.
+  `drg-bootstrap-branch-collisions`) remain valid forever; no reader may
+  require an `id` to be a ULID, and existing IDs are never rewritten.
+- Display sequences are allocated as `max(open ∪ closed) + 1` within the
+  four-digit space; exhaustion beyond 9999 is a typed error, and duplicate
+  sequences from concurrent allocation are left for `doctor` to detect
+  (see dragon 0001).

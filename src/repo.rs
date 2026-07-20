@@ -20,8 +20,14 @@ pub const CONFIG_TEMPLATE: &str = "version = 1\n";
 /// The config schema version this build supports.
 pub const SUPPORTED_VERSION: i64 = 1;
 
+/// Root-relative directory holding open dragon artifacts.
+pub const DRAGONS_OPEN_DIR: &str = "archaeology/dragons/open";
+
+/// Root-relative directory holding closed dragon artifacts.
+pub const DRAGONS_CLOSED_DIR: &str = "archaeology/dragons/closed";
+
 /// Directories every bootstrap repository must contain.
-pub const REQUIRED_DIRS: [&str; 2] = ["archaeology/dragons/open", "archaeology/dragons/closed"];
+pub const REQUIRED_DIRS: [&str; 2] = [DRAGONS_OPEN_DIR, DRAGONS_CLOSED_DIR];
 
 /// What an [`init`] invocation changed.
 #[derive(Debug, Default)]
@@ -101,6 +107,62 @@ pub fn init(root: &Path) -> Result<InitReport, Error> {
     }
 
     Ok(report)
+}
+
+/// Locate the repository root by walking upward from `start`.
+///
+/// Each directory from `start` to the filesystem root is checked for a
+/// `.strata.toml` marker; the first directory containing a valid one is the
+/// repository root. `start` should be an absolute path (such as the current
+/// working directory) so the upward walk covers every ancestor.
+///
+/// A marker that exists but cannot be trusted stops the search with a typed
+/// error instead of being silently walked past: continuing upward could
+/// resolve to an unrelated outer repository and write artifacts to the wrong
+/// tree. Unparseable or unsupported contents are `malformed-artifact`; a
+/// non-regular file (directory, symlink) at the marker path is
+/// `artifact-conflict`, matching how [`init`] classifies the same states.
+pub fn discover(start: &Path) -> Result<PathBuf, Error> {
+    let mut next = Some(start);
+    while let Some(dir) = next {
+        let config_path = dir.join(CONFIG_FILE);
+        match fs::symlink_metadata(&config_path) {
+            Ok(meta) if meta.is_file() => {
+                let content =
+                    fs::read_to_string(&config_path).map_err(|source| Error::Filesystem {
+                        operation: "read".into(),
+                        path: config_path.clone(),
+                        source,
+                    })?;
+                validate_config(&content).map_err(|reason| Error::MalformedArtifact {
+                    path: config_path,
+                    reason,
+                })?;
+                return Ok(dir.to_path_buf());
+            }
+            Ok(meta) => {
+                return Err(Error::ArtifactConflict {
+                    path: config_path,
+                    reason: format!(
+                        "a {} occupies the repository marker path, which must be a regular file",
+                        file_kind(&meta)
+                    ),
+                });
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(Error::Filesystem {
+                    operation: "inspect".into(),
+                    path: config_path,
+                    source,
+                });
+            }
+        }
+        next = dir.parent();
+    }
+    Err(Error::MissingRepository {
+        searched_from: start.to_path_buf(),
+    })
 }
 
 /// Validate the contents of a `.strata.toml` config.
@@ -391,6 +453,71 @@ mod tests {
             !root.join(CONFIG_FILE).exists(),
             "a failed init must leave no partial config"
         );
+    }
+
+    #[test]
+    fn discover_finds_root_from_the_root_itself() {
+        let tmp = temp_root();
+        init(tmp.path()).unwrap();
+
+        let root = discover(tmp.path()).unwrap();
+
+        assert_eq!(root, tmp.path());
+    }
+
+    #[test]
+    fn discover_finds_root_from_a_nested_directory() {
+        let tmp = temp_root();
+        init(tmp.path()).unwrap();
+        let nested = tmp.path().join("archaeology/dragons/open");
+
+        let root = discover(&nested).unwrap();
+
+        assert_eq!(root, tmp.path());
+    }
+
+    #[test]
+    fn discover_reports_missing_repository_with_the_search_origin() {
+        let tmp = temp_root();
+        let nested = tmp.path().join("a/b");
+        fs::create_dir_all(&nested).unwrap();
+
+        let err = discover(&nested).unwrap_err();
+
+        match err {
+            Error::MissingRepository { searched_from } => assert_eq!(searched_from, nested),
+            other => panic!("expected missing repository, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn discover_rejects_malformed_marker_instead_of_walking_past_it() {
+        let tmp = temp_root();
+        // A valid repository above a directory carrying a broken marker: the
+        // walk must stop at the broken marker, not resolve the outer root.
+        init(tmp.path()).unwrap();
+        let inner = tmp.path().join("vendored");
+        fs::create_dir(&inner).unwrap();
+        fs::write(inner.join(CONFIG_FILE), "version = [broken").unwrap();
+        let nested = inner.join("deep");
+        fs::create_dir(&nested).unwrap();
+
+        let err = discover(&nested).unwrap_err();
+
+        match err {
+            Error::MalformedArtifact { path, .. } => assert_eq!(path, inner.join(CONFIG_FILE)),
+            other => panic!("expected malformed artifact, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn discover_rejects_directory_at_marker_path() {
+        let tmp = temp_root();
+        fs::create_dir(tmp.path().join(CONFIG_FILE)).unwrap();
+
+        let err = discover(tmp.path()).unwrap_err();
+
+        assert!(matches!(err, Error::ArtifactConflict { .. }), "{err:?}");
     }
 
     #[test]

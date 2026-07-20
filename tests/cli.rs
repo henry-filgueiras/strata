@@ -101,12 +101,7 @@ fn zero_sequence_reference_is_rejected() {
 
 #[test]
 fn stub_commands_fail_with_stable_machine_token() {
-    let invocations: &[&[&str]] = &[
-        &["new", "dragon", "Example risk"],
-        &["list", "dragons"],
-        &["show", "dragon:1"],
-        &["doctor"],
-    ];
+    let invocations: &[&[&str]] = &[&["list", "dragons"], &["show", "dragon:1"], &["doctor"]];
     for args in invocations {
         let out = strata(args);
         assert_eq!(out.status.code(), Some(1), "stub {args:?} must exit 1");

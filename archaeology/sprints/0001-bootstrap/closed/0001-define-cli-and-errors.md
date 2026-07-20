@@ -2,7 +2,7 @@
 id: tsk-bootstrap-cli-errors
 sequence: 1
 kind: task
-status: done
+status: closed
 sprint: spr-bootstrap
 created: 2026-07-20
 closed: 2026-07-20

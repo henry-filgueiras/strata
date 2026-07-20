@@ -4,6 +4,7 @@
 //! error model can be exercised by tests and reused by later bootstrap
 //! tasks.
 
+pub mod artifact;
 pub mod cli;
 pub mod error;
 pub mod repo;
