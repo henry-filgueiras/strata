@@ -1,3 +1,9 @@
+# Historical inception script.
+#
+# This recreates Strata's original manually seeded repository layout.
+# It is not the implementation of `strata init` and is not intended for
+# routine use against an existing repository.
+
 #!/usr/bin/env bash
 set -euo pipefail
 
