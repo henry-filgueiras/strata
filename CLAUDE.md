@@ -212,7 +212,27 @@ Before finishing:
 4. Record unresolved findings as dragons.
 5. Record durable architectural conclusions as decisions.
 6. Check that paths, metadata, and references remain consistent.
-7. Summarize changes, verification, and remaining work.
+7. Commit completed work per the commit policy below.
+8. Summarize changes, verification, and remaining work.
+
+## Commit policy
+
+Commit automatically — without waiting to be asked — when, and only when:
+
+- the task's acceptance criteria are all met;
+- `scripts/check.sh` passes;
+- the related archaeology updates are included in the same state.
+
+Conventions:
+
+- one commit per completed vertical slice, including its archaeology
+  updates; unrelated policy or tooling changes go in separate commits;
+- follow the existing message style: `area: what changed`, lowercase,
+  imperative;
+- if acceptance criteria are not fully met, do not commit; report the gap
+  instead.
+
+Never push. Pushing is always a human decision.
 
 ## What deserves durable archaeology
 
