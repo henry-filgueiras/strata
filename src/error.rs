@@ -57,6 +57,26 @@ pub enum Error {
         source: io::Error,
     },
 
+    /// No managed artifact matches the requested reference.
+    #[error(
+        "no artifact matches `{reference}`; \
+         run `strata list dragons` to see the artifacts Strata manages"
+    )]
+    ArtifactNotFound { reference: String },
+
+    /// A reference that must name exactly one artifact matches several.
+    #[error(
+        "reference `{reference}` is ambiguous: it matches {}; \
+         refer to the artifact by the stable `id` in its front matter, \
+         or repair the duplicated metadata by hand",
+        .candidates.join(", ")
+    )]
+    AmbiguousReference {
+        reference: String,
+        /// Repository-relative paths of every matching artifact.
+        candidates: Vec<String>,
+    },
+
     /// Transitional category for commands whose surface is defined ahead of
     /// their behavior. Removed as bootstrap tasks land; not part of the
     /// durable error model.
@@ -81,6 +101,8 @@ impl Error {
             Error::ArtifactConflict { .. } => "artifact-conflict",
             Error::MalformedArtifact { .. } => "malformed-artifact",
             Error::Filesystem { .. } => "filesystem-failure",
+            Error::ArtifactNotFound { .. } => "artifact-not-found",
+            Error::AmbiguousReference { .. } => "ambiguous-reference",
             Error::Unimplemented { .. } => "unimplemented",
         }
     }
@@ -93,6 +115,8 @@ impl Error {
     /// - 4: artifact conflict
     /// - 5: malformed artifact
     /// - 6: filesystem failure
+    /// - 7: artifact not found
+    /// - 8: ambiguous reference
     pub fn exit_code(&self) -> u8 {
         match self {
             Error::Unimplemented { .. } => 1,
@@ -101,6 +125,8 @@ impl Error {
             Error::ArtifactConflict { .. } => 4,
             Error::MalformedArtifact { .. } => 5,
             Error::Filesystem { .. } => 6,
+            Error::ArtifactNotFound { .. } => 7,
+            Error::AmbiguousReference { .. } => 8,
         }
     }
 
@@ -136,6 +162,16 @@ mod tests {
                 path: PathBuf::from("archaeology/dragons/open/0003-z.md"),
                 source: io::Error::new(io::ErrorKind::PermissionDenied, "permission denied"),
             },
+            Error::ArtifactNotFound {
+                reference: "dragon:41".into(),
+            },
+            Error::AmbiguousReference {
+                reference: "dragon:2".into(),
+                candidates: vec![
+                    "archaeology/dragons/open/0002-a.md".into(),
+                    "archaeology/dragons/closed/0002-b.md".into(),
+                ],
+            },
             Error::unimplemented("doctor"),
         ]
     }
@@ -162,6 +198,8 @@ mod tests {
             ("artifact-conflict", 4),
             ("malformed-artifact", 5),
             ("filesystem-failure", 6),
+            ("artifact-not-found", 7),
+            ("ambiguous-reference", 8),
         ];
         for error in one_of_each() {
             let want = expected
@@ -207,7 +245,17 @@ mod tests {
                         path.display()
                     );
                 }
-                Error::InvalidInvocation { .. } | Error::Unimplemented { .. } => {}
+                Error::AmbiguousReference { candidates, .. } => {
+                    for candidate in candidates {
+                        assert!(
+                            message.contains(candidate),
+                            "message must name every candidate `{candidate}`: {message}"
+                        );
+                    }
+                }
+                Error::InvalidInvocation { .. }
+                | Error::ArtifactNotFound { .. }
+                | Error::Unimplemented { .. } => {}
             }
         }
     }

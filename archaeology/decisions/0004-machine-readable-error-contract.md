@@ -43,3 +43,20 @@ a next step.
   bootstrap commands gain behavior.
 - Future `--json` error output may add detail but must keep these categories
   consistent.
+
+## Update (2026-07-20): read-side resolution categories
+
+Task 0004 (list/show) appended two categories for reference resolution;
+existing codes and numeric assignments are unchanged:
+
+- exit code 7, category `artifact-not-found`: no managed artifact matches
+  the requested stable ID or `collection:sequence` reference;
+- exit code 8, category `ambiguous-reference`: a reference that must name
+  exactly one artifact matches several (duplicate display sequences or
+  duplicate stable IDs); Strata never silently picks one, and the message
+  names every candidate path.
+
+Success-path `--json` output added by the same task is a further
+compatibility surface: field names, field order, and deterministic
+ordering of `list`/`show` projections are pinned by tests. Errors remain
+stderr-only, so `--json` stdout stays parseable on every failure.

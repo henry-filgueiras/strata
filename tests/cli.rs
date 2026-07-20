@@ -70,24 +70,23 @@ fn unknown_collection_is_rejected_with_guidance() {
 }
 
 #[test]
-fn list_accepts_singular_and_plural_collection_names() {
-    for name in ["dragon", "dragons"] {
-        let out = strata(&["list", name]);
-        assert_eq!(
-            out.status.code(),
-            Some(1),
-            "`list {name}` should parse and reach the unimplemented stub"
-        );
-    }
+fn malformed_artifact_reference_is_rejected() {
+    let out = strata(&["show", "dragon:seven"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        stderr(&out).contains("positive integer"),
+        "error should state the expected form:\n{}",
+        stderr(&out)
+    );
 }
 
 #[test]
-fn malformed_artifact_reference_is_rejected() {
-    let out = strata(&["show", "dragon7"]);
+fn unknown_collection_in_reference_is_rejected() {
+    let out = strata(&["show", "widget:1"]);
     assert_eq!(out.status.code(), Some(2));
     assert!(
-        stderr(&out).contains("collection:sequence"),
-        "error should state the expected form:\n{}",
+        stderr(&out).contains("widget"),
+        "error should name the input:\n{}",
         stderr(&out)
     );
 }
@@ -101,14 +100,11 @@ fn zero_sequence_reference_is_rejected() {
 
 #[test]
 fn stub_commands_fail_with_stable_machine_token() {
-    let invocations: &[&[&str]] = &[&["list", "dragons"], &["show", "dragon:1"], &["doctor"]];
-    for args in invocations {
-        let out = strata(args);
-        assert_eq!(out.status.code(), Some(1), "stub {args:?} must exit 1");
-        let err = stderr(&out);
-        assert!(
-            err.starts_with("error[unimplemented]: "),
-            "stub {args:?} must lead with the machine token:\n{err}"
-        );
-    }
+    let out = strata(&["doctor"]);
+    assert_eq!(out.status.code(), Some(1), "stub `doctor` must exit 1");
+    let err = stderr(&out);
+    assert!(
+        err.starts_with("error[unimplemented]: "),
+        "stub `doctor` must lead with the machine token:\n{err}"
+    );
 }

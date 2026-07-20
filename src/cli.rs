@@ -33,11 +33,18 @@ pub enum Command {
     List {
         /// Collection to list (`dragon` or `dragons`)
         collection: Collection,
+        /// Emit a deterministic JSON array instead of human-readable lines
+        #[arg(long)]
+        json: bool,
     },
     /// Show one artifact
     Show {
-        /// Artifact reference in `collection:sequence` form, e.g. `dragon:7`
-        reference: ArtifactRef,
+        /// `collection:sequence` reference (e.g. `dragon:7`) or a stable
+        /// artifact `id`
+        reference: ShowTarget,
+        /// Emit a deterministic JSON object instead of the raw artifact
+        #[arg(long)]
+        json: bool,
     },
     /// Validate repository invariants and report corruption
     Doctor,
@@ -123,6 +130,43 @@ impl fmt::Display for ArtifactRef {
     }
 }
 
+/// What `strata show` was asked to resolve.
+///
+/// A reference containing `:` is a human [`ArtifactRef`] and must parse as
+/// one; anything else is a stable opaque identity, passed through verbatim.
+/// IDs are opaque strings — nothing here may assume ULID structure — so the
+/// only invalid bare reference is an empty one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShowTarget {
+    Reference(ArtifactRef),
+    Id(String),
+}
+
+impl FromStr for ShowTarget {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.contains(':') {
+            return s.parse::<ArtifactRef>().map(ShowTarget::Reference);
+        }
+        if s.is_empty() {
+            return Err("empty artifact reference; expected `collection:sequence` \
+                 (e.g. `dragon:7`) or a stable artifact `id`"
+                .into());
+        }
+        Ok(ShowTarget::Id(s.to_string()))
+    }
+}
+
+impl fmt::Display for ShowTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ShowTarget::Reference(reference) => reference.fmt(f),
+            ShowTarget::Id(id) => f.write_str(id),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,6 +222,33 @@ mod tests {
     fn artifact_ref_displays_canonical_singular_form() {
         let reference: ArtifactRef = "dragons:0003".parse().unwrap();
         assert_eq!(reference.to_string(), "dragon:3");
+    }
+
+    #[test]
+    fn show_target_parses_human_references_and_opaque_ids() {
+        assert_eq!(
+            "dragon:7".parse::<ShowTarget>(),
+            Ok(ShowTarget::Reference(ArtifactRef {
+                collection: Collection::Dragon,
+                sequence: 7,
+            }))
+        );
+        for id in [
+            "drg_01K0P6W5PK8T19H7M2V8W6YQ4C",
+            "drg-bootstrap-branch-collisions",
+        ] {
+            assert_eq!(id.parse::<ShowTarget>(), Ok(ShowTarget::Id(id.into())));
+        }
+    }
+
+    #[test]
+    fn show_target_rejects_invalid_human_references_and_empty_ids() {
+        let err = "dragon:seven".parse::<ShowTarget>().unwrap_err();
+        assert!(err.contains("positive integer"), "{err}");
+        let err = "widget:1".parse::<ShowTarget>().unwrap_err();
+        assert!(err.contains("widget"), "{err}");
+        let err = "".parse::<ShowTarget>().unwrap_err();
+        assert!(err.contains("empty artifact reference"), "{err}");
     }
 
     #[test]

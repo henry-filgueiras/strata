@@ -187,7 +187,7 @@ fn max_sequence_in(dir: &Path) -> Result<u32, Error> {
 
 /// Extract the display sequence from a valid dragon filename
 /// (`NNNN-slug.md`), or `None` when the name does not conform.
-fn parse_sequence(name: &str) -> Option<u32> {
+pub(crate) fn parse_sequence(name: &str) -> Option<u32> {
     let digits = name.get(..4)?;
     if !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;
