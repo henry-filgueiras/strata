@@ -204,7 +204,7 @@ During work:
 
 Before finishing:
 
-1. Run formatting, linting, and tests.
+1. Run formatting, linting, and tests using `scripts/check.sh`.
 2. Update the relevant work item with its result.
 3. Move completed work from `pending` to `closed`.
 4. Record unresolved findings as dragons.
