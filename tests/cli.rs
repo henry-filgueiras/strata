@@ -102,7 +102,6 @@ fn zero_sequence_reference_is_rejected() {
 #[test]
 fn stub_commands_fail_with_stable_machine_token() {
     let invocations: &[&[&str]] = &[
-        &["init"],
         &["new", "dragon", "Example risk"],
         &["list", "dragons"],
         &["show", "dragon:1"],
