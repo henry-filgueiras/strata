@@ -1,14 +1,24 @@
-# Historical inception script.
+# Historical one-shot inception script.
 #
 # This recreates Strata's original manually seeded repository layout.
 # It is not the implementation of `strata init` and is not intended for
 # routine use against an existing repository.
+#
+# Retained to document and reproduce the repository's original seed state.
+# Do not update this script to mirror later repository evolution.
 
 #!/usr/bin/env bash
 set -euo pipefail
 
 if [[ ! -d .git ]]; then
   echo "error: run this from the root of the cloned Strata repository" >&2
+  exit 1
+fi
+
+MARKER="meta/bootstrap_complete"
+
+if [[ -e "$MARKER" ]]; then
+  echo "error: Strata inception bootstrap has already completed" >&2
   exit 1
 fi
 
@@ -765,6 +775,15 @@ EOF
 
 cat > rustfmt.toml <<'EOF'
 edition = "2024"
+EOF
+
+mkdir -p meta
+cat > "$MARKER" <<'EOF'
+Strata repository inception bootstrap completed.
+
+This marker prevents accidental reruns of scripts/bootstrap-inception.sh.
+The script records the original seed state and is not kept synchronized with
+the repository's later evolution.
 EOF
 
 echo
