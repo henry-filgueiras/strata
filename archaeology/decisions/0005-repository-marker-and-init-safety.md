@@ -43,3 +43,22 @@ initialization makes.
 - The existing error categories from [decision 0004] cover config problems
   (`malformed-artifact`) and occupied paths (`artifact-conflict`); no new
   categories or exit codes were introduced.
+
+## Update (2026-07-20): empty directories do not survive Git round-trip
+
+Git does not track empty directories. Committing a freshly initialized
+repository and cloning it preserves `.strata.toml` but drops the empty
+`archaeology/dragons/open` and `archaeology/dragons/closed` directories;
+`list` and `new` then fail with a `malformed-artifact` error claiming the
+layout is damaged, though no canonical data was lost.
+
+"Requires" therefore overstates what this decision can guarantee: the
+layout requirement is not closed under `git clone`, and the resulting
+error is a false corruption diagnosis of a state Git inevitably produces.
+Re-running `strata init` remains a safe recovery, and the mutation-safety
+contract above is unaffected.
+
+Whether validity should instead be defined by the marker alone, with
+managed directories materialized on demand, is tracked as dragon 0002
+(`drg-bootstrap-git-round-trip`). Its resolution will be recorded here and
+must land before `doctor` (task 0005) is specified.
