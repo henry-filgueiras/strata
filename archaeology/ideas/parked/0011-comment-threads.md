@@ -149,3 +149,39 @@ Raised in discussion of the specimen; none are settled by it.
   canonical with a structured JSONL projection derived from it —
   inverting the pretty-print direction — since derived projections are
   cheap and disposable by decision 1.
+
+## Second specimen findings (2026-07-21)
+
+A second thread was run end-to-end as a deliberately different case:
+`archaeology/comments/resolved/0002-fortune-reproducibility.md`
+(`cmt-fortune-reproducibility`), an advisory product-design question
+against `tsk-strata-fortune`, resolved with most of its proposal
+rejected. New lessons, beyond the first specimen's:
+
+- Single-label dispositions are too coarse. Both specimens strained
+  the enum (`accepted-with-refinement`, `accepted-in-part`): a
+  multi-point review resolves per point, so structured resolution
+  wants accepted/rejected/deferred groupings, not one verdict.
+- Deferral does not imply an artifact. The provisional template
+  presumed `deferred` promotes to a parked idea; the specimen deferred
+  two designs with no idea minted, because parking them would record
+  speculative features with no action attached. `promoted-to` must be
+  optional for non-accepted dispositions.
+- Rejection residue is only grep-discoverable. The promotion rule
+  governs accepted conclusions; a mostly-rejected thread legitimately
+  leaves its rationale nowhere but the resolved thread. That is
+  consistent with never-load-bearing, but it means "settled for now"
+  tradeoffs can be reopened by someone who never finds the thread.
+  Mitigation used: record the exclusion as an amendment on the target
+  artifact. The general shape — surfacing resolved threads when a
+  proposal approaches the same ground — is idea 12's problem.
+- Anchor rungs have different orphaning profiles. The first specimen's
+  quote anchor was orphaned by its own successful resolution; this
+  thread's heading anchor survived the amendment made beneath it,
+  since resolution edited under the heading rather than renaming it.
+  Coarser rungs live longer; `git-blob` matters less as the rung
+  coarsens. This validates the degradation ladder's premise.
+- Advisory-ness needed no severity field. The never-load-bearing rule
+  already encodes non-blocking; "should not block Sprint 2" lived in
+  prose and cost nothing. No `severity`/`blocking` front matter earned
+  its way in.

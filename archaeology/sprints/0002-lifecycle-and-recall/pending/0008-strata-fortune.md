@@ -27,7 +27,11 @@ risks resurface without anyone remembering to look.
   message and exits 0.
 - Closed dragons are never selected.
 - Tests pin the output shape and the empty state; selection tests
-  assert membership in the open set rather than a specific pick.
+  assert membership in the open set rather than a specific pick. The
+  staleness bias is pinned structurally, not statistically: weighting
+  is a pure function from open-set metadata to weights, unit-tested
+  directly (weight monotonic in age, nonzero for every open dragon),
+  and the single random draw takes its RNG as a parameter.
 
 ## On completion
 
@@ -36,3 +40,17 @@ Adopt idea 6: move `archaeology/ideas/parked/0006-strata-fortune.md` to
 work. Note in the result any divergence from the idea's sketch (v1
 draws only from open dragons; parked ideas join when ideas become a
 managed collection).
+
+## Amendments
+
+- 2026-07-21: the tests criterion pins the staleness bias via a pure
+  weight function with the RNG passed in, after external review asked
+  whether selection should be reproducible and explainable — the
+  original criteria ("older more likely, everywhere nonzero") were
+  untestable from output samples alone. Deliberately excluded until a
+  real automation consumer exists: `--seed`, `--json`, and any
+  selection-metadata or method-identifier surface; the weighting
+  remains an implementation detail, not a compatibility contract. If
+  automation later needs deterministic "most neglected" retrieval,
+  that is an ordering on `list` (or a recall sibling), not a seed on
+  fortune. Provenance: thread `cmt-fortune-reproducibility`.
