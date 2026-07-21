@@ -77,22 +77,18 @@ pub enum Error {
         candidates: Vec<String>,
     },
 
-    /// Transitional category for commands whose surface is defined ahead of
-    /// their behavior. Removed as bootstrap tasks land; not part of the
-    /// durable error model.
+    /// `strata doctor` completed its scan and the repository has validation
+    /// findings. The findings themselves are the stdout payload; this error
+    /// is the machine-readable summary on stderr.
     #[error(
-        "`strata {command}` is not implemented yet; \
-         the bootstrap command surface is defined ahead of its behavior"
+        "repository validation found {problems} problem(s); \
+         the report on stdout names each affected path — \
+         repair the files by hand, then re-run `strata doctor`"
     )]
-    Unimplemented { command: &'static str },
+    UnhealthyRepository { problems: usize },
 }
 
 impl Error {
-    /// A not-yet-implemented bootstrap command.
-    pub fn unimplemented(command: &'static str) -> Self {
-        Error::Unimplemented { command }
-    }
-
     /// Stable machine-readable identifier for this error category.
     pub fn code(&self) -> &'static str {
         match self {
@@ -103,13 +99,15 @@ impl Error {
             Error::Filesystem { .. } => "filesystem-failure",
             Error::ArtifactNotFound { .. } => "artifact-not-found",
             Error::AmbiguousReference { .. } => "ambiguous-reference",
-            Error::Unimplemented { .. } => "unimplemented",
+            Error::UnhealthyRepository { .. } => "unhealthy-repository",
         }
     }
 
     /// Stable process exit code for this error category.
     ///
-    /// - 1: transitional (`unimplemented`)
+    /// - 1: reserved for general failure (previously the transitional
+    ///   `unimplemented` category, retired when the last stub gained
+    ///   behavior; not reused)
     /// - 2: invalid invocation (matches `clap` usage errors)
     /// - 3: missing repository
     /// - 4: artifact conflict
@@ -117,9 +115,9 @@ impl Error {
     /// - 6: filesystem failure
     /// - 7: artifact not found
     /// - 8: ambiguous reference
+    /// - 9: unhealthy repository (`doctor` found validation problems)
     pub fn exit_code(&self) -> u8 {
         match self {
-            Error::Unimplemented { .. } => 1,
             Error::InvalidInvocation { .. } => 2,
             Error::MissingRepository { .. } => 3,
             Error::ArtifactConflict { .. } => 4,
@@ -127,6 +125,7 @@ impl Error {
             Error::Filesystem { .. } => 6,
             Error::ArtifactNotFound { .. } => 7,
             Error::AmbiguousReference { .. } => 8,
+            Error::UnhealthyRepository { .. } => 9,
         }
     }
 
@@ -172,7 +171,7 @@ mod tests {
                     "archaeology/dragons/closed/0002-b.md".into(),
                 ],
             },
-            Error::unimplemented("doctor"),
+            Error::UnhealthyRepository { problems: 3 },
         ]
     }
 
@@ -192,7 +191,6 @@ mod tests {
     #[test]
     fn exit_codes_match_documented_contract() {
         let expected = [
-            ("unimplemented", 1),
             ("invalid-invocation", 2),
             ("missing-repository", 3),
             ("artifact-conflict", 4),
@@ -200,6 +198,7 @@ mod tests {
             ("filesystem-failure", 6),
             ("artifact-not-found", 7),
             ("ambiguous-reference", 8),
+            ("unhealthy-repository", 9),
         ];
         for error in one_of_each() {
             let want = expected
@@ -255,7 +254,7 @@ mod tests {
                 }
                 Error::InvalidInvocation { .. }
                 | Error::ArtifactNotFound { .. }
-                | Error::Unimplemented { .. } => {}
+                | Error::UnhealthyRepository { .. } => {}
             }
         }
     }

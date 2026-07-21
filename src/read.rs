@@ -245,8 +245,9 @@ fn managed_entries(dir: &Path) -> Result<Vec<String>, Error> {
 
 /// Parse one managed dragon file into the read model, validating filename
 /// agreement, required front matter, lifecycle placement, and the title
-/// heading.
-fn parse_dragon(
+/// heading. `doctor` reuses this per-file pipeline so validation semantics
+/// cannot drift between scanning and diagnosis.
+pub(crate) fn parse_dragon(
     path: &Path,
     dir_rel: &str,
     file_name: &str,

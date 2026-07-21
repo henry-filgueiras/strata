@@ -6,6 +6,7 @@
 
 pub mod artifact;
 pub mod cli;
+pub mod doctor;
 pub mod error;
 pub mod read;
 pub mod repo;

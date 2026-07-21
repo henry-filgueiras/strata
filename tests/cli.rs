@@ -97,14 +97,3 @@ fn zero_sequence_reference_is_rejected() {
     assert_eq!(out.status.code(), Some(2));
     assert!(stderr(&out).contains("start at 1"), "{}", stderr(&out));
 }
-
-#[test]
-fn stub_commands_fail_with_stable_machine_token() {
-    let out = strata(&["doctor"]);
-    assert_eq!(out.status.code(), Some(1), "stub `doctor` must exit 1");
-    let err = stderr(&out);
-    assert!(
-        err.starts_with("error[unimplemented]: "),
-        "stub `doctor` must lead with the machine token:\n{err}"
-    );
-}

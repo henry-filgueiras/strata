@@ -47,7 +47,12 @@ pub enum Command {
         json: bool,
     },
     /// Validate repository invariants and report corruption
-    Doctor,
+    Doctor {
+        /// Emit findings as a deterministic JSON array instead of
+        /// human-readable lines
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Artifact collections known to the bootstrap implementation.

@@ -151,7 +151,7 @@ Strata is bootstrapping its smallest useful vertical slice. Honest scoreboard:
 | `strata new dragon "…"` | create an artifact; sequence, slug, and ID assigned safely | ✅ |
 | `strata list dragons [--json]` | discover and list artifacts | ✅ |
 | `strata show dragon:N` | inspect one artifact | ✅ |
-| `strata doctor` | validate repository invariants | 🚧 surface defined, checks in progress |
+| `strata doctor [--json]` | validate repository invariants, report every finding | ✅ |
 
 The bootstrap hardcodes the `dragon` collection while the mechanics are
 proven; the other collections above are maintained manually until then.

@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use clap::Parser;
 use strata::cli::{Cli, Collection, Command, ShowTarget};
 use strata::error::Error;
-use strata::{artifact, read, repo};
+use strata::{artifact, doctor, read, repo};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -18,15 +18,13 @@ fn main() -> ExitCode {
 }
 
 /// Dispatch a parsed command.
-///
-/// `doctor` is still a stub; its behavior arrives with its own sprint task.
 fn run(command: &Command) -> Result<(), Error> {
     match command {
         Command::Init => init(),
         Command::New { collection, title } => new_artifact(*collection, title),
         Command::List { collection, json } => list(*collection, *json),
         Command::Show { reference, json } => show(reference, *json),
-        Command::Doctor => Err(Error::unimplemented("doctor")),
+        Command::Doctor { json } => doctor(*json),
     }
 }
 
@@ -99,6 +97,36 @@ fn show(target: &ShowTarget, json: bool) -> Result<(), Error> {
         print!("{}", artifact.content);
     }
     Ok(())
+}
+
+/// Validate the enclosing repository and render every finding.
+///
+/// Findings are the stdout payload — human lines or a deterministic JSON
+/// array — so `--json` output stays parseable even when validation fails;
+/// an unhealthy repository is then reported through the error contract
+/// (`unhealthy-repository`, exit code 9) on stderr.
+fn doctor(json: bool) -> Result<(), Error> {
+    let root = repo::discover(&cwd()?)?;
+    let report = doctor::check(&root)?;
+    if json {
+        println!("{}", to_json(&report.findings));
+    } else if report.healthy() {
+        println!(
+            "doctor: {} artifact(s) checked, no problems found",
+            report.artifacts_checked
+        );
+    } else {
+        for finding in &report.findings {
+            println!("{}  {}: {}", finding.problem, finding.path, finding.detail);
+        }
+    }
+    if report.healthy() {
+        Ok(())
+    } else {
+        Err(Error::UnhealthyRepository {
+            problems: report.findings.len(),
+        })
+    }
 }
 
 /// Serialize a projection built from plain strings and integers.

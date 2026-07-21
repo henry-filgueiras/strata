@@ -60,3 +60,25 @@ Success-path `--json` output added by the same task is a further
 compatibility surface: field names, field order, and deterministic
 ordering of `list`/`show` projections are pinned by tests. Errors remain
 stderr-only, so `--json` stdout stays parseable on every failure.
+
+## Update (2026-07-21): doctor outcome category; `unimplemented` retired
+
+Task 0005 (`doctor`) appended one category and retired one:
+
+- exit code 9, category `unhealthy-repository`: `doctor` completed its
+  scan and the repository has validation findings. The findings are the
+  stdout payload — human lines or a deterministic `--json` array of
+  `{problem, path, detail}` objects — while stderr carries only the
+  summary token line, preserving the errors-are-stderr-only rule.
+- the transitional `unimplemented` category is removed with the last
+  stub: every bootstrap command now has behavior. Exit code 1 stays
+  reserved for general failure and is not reassigned.
+
+The finding `problem` codes (`malformed-artifact`, `unreadable-artifact`,
+`artifact-conflict`, `duplicate-id`, `duplicate-sequence`) are a
+provisional vocabulary, deliberately recorded as a learning-experience
+call rather than a settled contract: one collection and one validation
+pass are not enough evidence to freeze finding taxonomy. Revisit when
+doctor grows beyond the dragon collection or gains reference-graph
+checks (idea 2); exit code 9 and the category identifier itself are
+stable surfaces like the rest of this decision.
