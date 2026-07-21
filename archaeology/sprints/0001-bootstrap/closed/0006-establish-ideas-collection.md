@@ -2,9 +2,10 @@
 id: tsk-bootstrap-ideas-collection
 sequence: 6
 kind: task
-status: pending
+status: closed
 sprint: spr-bootstrap
 created: 2026-07-20
+closed: 2026-07-20
 ---
 
 # Establish the ideas collection
@@ -40,3 +41,32 @@ This is manual-layout and convention work only; Strata CLI support for an
 References remain prose-form until dragon 3
 (`drg_01KY169X7W0YXJ5QFV4D1MK4FB`, reference syntax) resolves; this task
 must not block on it.
+
+## Result
+
+Established `archaeology/ideas/` with lifecycle directories `parked/`,
+`adopted/`, `rejected/`, where status equals the directory name. Only
+`parked/` was materialized: pre-creating empty terminal directories would
+reproduce the Git round-trip flaw recorded as dragon 2, so the CLAUDE.md
+conventions now state that lifecycle directories are created on first use.
+That generalization also tightened the existing placement rule from the
+`closed/`-specific wording to "status equals the lifecycle directory".
+
+The five parked ideas in log 0002 were migrated to ideas 1–5
+(`links bind` with check mode; doctor reference-graph checks;
+`strata edit`; editor integration shims; typed dragon-resolution edges),
+each with Problem / Sketch / Evidence sections citing dragons, decisions,
+and prior art in the interim prose convention. Log 0002 gained an appended
+retirement note; its rejected-alternatives record is unchanged.
+
+CLAUDE.md documents the collection, the never-load-bearing rule, and the
+`parked → adopted | rejected` lifecycle with terminal moves instead of
+deletion.
+
+## Verification
+
+`scripts/check.sh` clean (fmt, 116 tests, clippy — no code changed).
+`strata list dragons` and `strata show` remain unaffected by the new
+directory, confirming reads only touch managed dragon paths. Front matter
+of all five ideas hand-checked for sequence/filename/status/placement
+agreement, since no tooling validates the `idea` kind yet.

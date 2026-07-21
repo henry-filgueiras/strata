@@ -67,3 +67,11 @@ The archaeology layout has no designated home for future ideas, although
 the change-discipline rules require recording them; this log is the
 stand-in. If idea-parking recurs, the gap deserves a real answer (a
 collection, or a convention) rather than more stand-ins.
+
+## Update (2026-07-20): parking-lot role retired
+
+Task 0006 (`tsk-bootstrap-ideas-collection`) established
+`archaeology/ideas/`; the parked ideas above were migrated to individual
+artifacts (ideas 1 through 5). This log remains the canonical record of
+the rejected alternatives; the "Parked future ideas" section above is
+historical and no longer maintained.

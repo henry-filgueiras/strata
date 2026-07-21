@@ -167,6 +167,10 @@ archaeology/
 ├── dragons/
 │   ├── open/
 │   └── closed/
+├── ideas/
+│   ├── parked/
+│   ├── adopted/
+│   └── rejected/
 ├── logs/
 └── sprints/
     └── NNNN-name/
@@ -179,12 +183,22 @@ Conventions:
 
 - use four-digit zero-padded display sequences;
 - use lowercase kebab-case filenames;
-- lifecycle metadata must agree with placement; files under `closed/` use
-  `status: closed`;
+- lifecycle metadata must agree with placement: an artifact's `status`
+  equals the name of its lifecycle directory (`closed/` holds
+  `status: closed`, `parked/` holds `status: parked`, and so on);
+- lifecycle directories are created on first use; do not pre-create empty
+  ones, since Git cannot track them (see dragon 2);
 - do not reuse deleted or moved sequence numbers;
 - do not renumber existing artifacts cosmetically;
 - prefer moving records to terminal states over deleting history;
 - keep generated artifacts clearly distinguishable from canonical sources.
+
+Ideas are never load-bearing. An idea is an uncommitted proposal: no typed
+dependency edge may target one, and rejecting or abandoning an idea must
+invalidate nothing canonical. Ideas may freely reference dragons,
+decisions, and prior art as motivating evidence, and a decision that
+adopts an idea may cite it as provenance. Idea lifecycle is `parked` to
+`adopted` or `rejected`; terminal ideas are moved, never deleted.
 
 ## Archaeology workflow
 
