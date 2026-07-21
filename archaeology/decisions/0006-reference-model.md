@@ -67,6 +67,11 @@ implements them; they constrain future syntax and tooling choices.
   typed edge is likely real corruption; a dangling untyped marker is not),
   are deferred until a consumer exists.
 
+Both open points are promoted to dragon 3
+(`drg_01KY169X7W0YXJ5QFV4D1MK4FB`), which owns their resolution; the
+resolving decision should be recorded as an update here or as a successor
+decision.
+
 ## Consequences
 
 - Writing references correctly requires no tooling; writing them durably
