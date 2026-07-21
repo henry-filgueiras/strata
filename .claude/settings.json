@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo test)",
+      "Bash(cargo test *)",
+      "Bash(cargo clippy)",
+      "Bash(cargo clippy *)",
+      "Bash(cargo check)",
+      "Bash(cargo check *)",
+      "Bash(cargo build)",
+      "Bash(cargo build *)",
+      "Bash(cargo fmt --check)",
+      "Bash(./scripts/check.sh)",
+      "Bash(./scripts/check.sh *)",
+      "Bash(scripts/check.sh)",
+      "Bash(scripts/check.sh *)",
+      "Bash(./target/debug/strata list *)",
+      "Bash(./target/debug/strata show *)",
+      "Bash(./target/debug/strata --help)",
+      "Bash(./target/debug/strata --version)"
+    ]
+  }
+}
