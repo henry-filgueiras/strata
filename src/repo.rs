@@ -191,8 +191,11 @@ pub fn validate_config(content: &str) -> Result<(), String> {
 /// directories and refusing any component occupied by a non-directory.
 ///
 /// Components are checked without following symlinks: a symlink where a
-/// required directory belongs is a conflict, not a directory.
-fn ensure_dir(root: &Path, rel: &str, created: &mut Vec<PathBuf>) -> Result<(), Error> {
+/// required directory belongs is a conflict, not a directory. Besides
+/// `init`, writers use this to materialize managed directories on demand:
+/// Git does not round-trip empty directories, so a cloned repository may
+/// carry the marker without the layout.
+pub(crate) fn ensure_dir(root: &Path, rel: &str, created: &mut Vec<PathBuf>) -> Result<(), Error> {
     let mut rel_path = PathBuf::new();
     for component in Path::new(rel).components() {
         rel_path.push(component);

@@ -195,26 +195,31 @@ pub fn resolve<'a>(
 
 /// Non-hidden entry names of one managed directory, in unspecified order.
 ///
-/// A missing managed directory means the repository layout is damaged;
-/// non-UTF-8 names cannot be artifacts and are malformed rather than
-/// skipped.
+/// The repository is defined by its marker alone: Git does not round-trip
+/// empty directories, so a missing managed directory is an empty
+/// collection, not damage. A non-directory object occupying the managed
+/// path is a real conflict. Non-UTF-8 names cannot be artifacts and are
+/// malformed rather than skipped.
 fn managed_entries(dir: &Path) -> Result<Vec<String>, Error> {
-    let entries = fs::read_dir(dir).map_err(|source| {
-        if source.kind() == io::ErrorKind::NotFound {
-            Error::MalformedArtifact {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) if source.kind() == io::ErrorKind::NotADirectory => {
+            return Err(Error::ArtifactConflict {
                 path: dir.to_path_buf(),
-                reason: "required dragon directory is missing; \
-                         run `strata init` to restore the repository layout"
+                reason: "a non-directory object occupies a managed dragon \
+                         directory path; move it aside"
                     .into(),
-            }
-        } else {
-            Error::Filesystem {
+            });
+        }
+        Err(source) => {
+            return Err(Error::Filesystem {
                 operation: "read directory".into(),
                 path: dir.to_path_buf(),
                 source,
-            }
+            });
         }
-    })?;
+    };
 
     let mut names = Vec::new();
     for entry in entries {
@@ -855,13 +860,46 @@ mod tests {
     }
 
     #[test]
-    fn missing_managed_directory_is_a_typed_error() {
+    fn missing_managed_directory_scans_as_an_empty_collection() {
+        let tmp = temp_repo();
+        write_dragon(
+            tmp.path(),
+            DRAGONS_OPEN_DIR,
+            "0001-alone.md",
+            &dragon_markdown("id-1", 1, "open", "Alone"),
+        );
+        fs::remove_dir(tmp.path().join(DRAGONS_CLOSED_DIR)).unwrap();
+
+        let artifacts = scan_dragons(tmp.path()).unwrap();
+
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].summary.title, "Alone");
+    }
+
+    #[test]
+    fn marker_only_repository_scans_as_empty() {
+        // Simulate `git clone` of a freshly initialized repository: Git
+        // preserves the marker but drops every empty directory.
+        let tmp = temp_repo();
+        fs::remove_dir_all(tmp.path().join("archaeology")).unwrap();
+
+        assert!(scan_dragons(tmp.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn non_directory_at_managed_path_is_a_conflict() {
         let tmp = temp_repo();
         fs::remove_dir(tmp.path().join(DRAGONS_CLOSED_DIR)).unwrap();
+        fs::write(tmp.path().join(DRAGONS_CLOSED_DIR), "not a directory").unwrap();
 
         let err = scan_dragons(tmp.path()).unwrap_err();
 
-        expect_malformed(err, DRAGONS_CLOSED_DIR, "strata init");
+        match err {
+            Error::ArtifactConflict { path, .. } => {
+                assert!(path.ends_with(DRAGONS_CLOSED_DIR), "{path:?}");
+            }
+            other => panic!("expected artifact conflict, got {other:?}"),
+        }
     }
 
     #[test]

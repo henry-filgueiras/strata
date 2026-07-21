@@ -62,3 +62,25 @@ Whether validity should instead be defined by the marker alone, with
 managed directories materialized on demand, is tracked as dragon 0002
 (`drg-bootstrap-git-round-trip`). Its resolution will be recorded here and
 must land before `doctor` (task 0005) is specified.
+
+## Update (2026-07-21): validity is defined by the marker alone
+
+Dragon 0002 is resolved by adopting its candidate direction. Repository
+validity is closed under Git round-trip:
+
+- the valid `.strata.toml` marker alone defines a repository; the
+  directory layout is a convenience, not a validity requirement;
+- readers treat a missing managed directory as an empty collection and
+  never mutate the repository to compensate;
+- writers materialize missing managed directories on demand, reusing the
+  conflict-checked, symlink-refusing directory creation `init` uses;
+- a non-directory object occupying a managed path remains a typed
+  `artifact-conflict` in every code path;
+- `init` is unchanged: it still eagerly creates the skeleton and remains
+  a safe, convergent convenience.
+
+Consequently `doctor` must not report missing empty managed directories
+as corruption — states Git inevitably produces are healthy. A `.gitkeep`
+convention was considered and rejected as symptom-level (it cannot help
+repositories initialized before the change and re-imposes the problem on
+every future managed directory).

@@ -160,3 +160,31 @@ fn malformed_artifact_filename_blocks_creation_with_a_named_path() {
     assert!(err.starts_with("error[malformed-artifact]: "), "{err}");
     assert!(err.contains("scratch.txt"), "must name the file:\n{err}");
 }
+
+#[test]
+fn marker_only_repository_survives_git_round_trip() {
+    // Git does not track empty directories: cloning a freshly initialized
+    // repository preserves `.strata.toml` but drops the empty layout.
+    // Validity is defined by the marker alone, so reads see an empty
+    // collection and writes materialize the directories on demand.
+    let tmp = init_repo();
+    fs::remove_dir_all(tmp.path().join("archaeology")).unwrap();
+
+    let out = strata_in(tmp.path(), &["list", "dragons"]);
+    assert!(out.status.success(), "list failed:\n{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("no dragons found"),
+        "{}",
+        stdout(&out)
+    );
+
+    let out = strata_in(tmp.path(), &["new", "dragon", "Post-clone risk"]);
+    assert!(out.status.success(), "new failed:\n{}", stderr(&out));
+    assert!(
+        tmp.path()
+            .join(OPEN_DIR)
+            .join("0001-post-clone-risk.md")
+            .is_file(),
+        "the managed directory must be materialized on demand"
+    );
+}

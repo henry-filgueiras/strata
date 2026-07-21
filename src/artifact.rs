@@ -79,6 +79,10 @@ pub fn create_dragon(root: &Path, title: &str) -> Result<NewDragon, Error> {
     let created = jiff::Zoned::now().strftime("%Y-%m-%d").to_string();
     let content = render_dragon(&id, sequence, &created, title);
 
+    // Git does not round-trip empty directories, so a cloned repository may
+    // lack the destination; materialize it with the same conflict checks
+    // `init` uses.
+    crate::repo::ensure_dir(root, DRAGONS_OPEN_DIR, &mut Vec::new())?;
     let filename = format!("{sequence:04}-{slug}.md");
     write_new(&root.join(DRAGONS_OPEN_DIR), &filename, &content)?;
 
@@ -133,27 +137,32 @@ fn next_sequence(root: &Path) -> Result<u32, Error> {
 
 /// Largest display sequence among the artifacts in one managed directory.
 ///
-/// Every non-hidden entry must be a valid dragon filename; malformed names
-/// are a typed error naming the path, never silently skipped. Entries
-/// starting with `.` (editor and VCS metadata, abandoned temporaries) are
-/// not artifacts and are ignored.
+/// A missing managed directory is an empty collection (Git does not
+/// round-trip empty directories); a non-directory object occupying the
+/// managed path is a conflict. Every non-hidden entry must be a valid
+/// dragon filename; malformed names are a typed error naming the path,
+/// never silently skipped. Entries starting with `.` (editor and VCS
+/// metadata, abandoned temporaries) are not artifacts and are ignored.
 fn max_sequence_in(dir: &Path) -> Result<u32, Error> {
-    let entries = fs::read_dir(dir).map_err(|source| {
-        if source.kind() == io::ErrorKind::NotFound {
-            Error::MalformedArtifact {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(source) if source.kind() == io::ErrorKind::NotADirectory => {
+            return Err(Error::ArtifactConflict {
                 path: dir.to_path_buf(),
-                reason: "required dragon directory is missing; \
-                         run `strata init` to restore the repository layout"
+                reason: "a non-directory object occupies a managed dragon \
+                         directory path; move it aside"
                     .into(),
-            }
-        } else {
-            Error::Filesystem {
+            });
+        }
+        Err(source) => {
+            return Err(Error::Filesystem {
                 operation: "read directory".into(),
                 path: dir.to_path_buf(),
                 source,
-            }
+            });
         }
-    })?;
+    };
 
     let mut max = 0u32;
     for entry in entries {
@@ -467,19 +476,27 @@ mod tests {
     }
 
     #[test]
-    fn missing_managed_directory_is_a_typed_error() {
+    fn create_materializes_missing_managed_directories() {
+        // Simulate `git clone` of a freshly initialized repository: Git
+        // preserves the marker but drops every empty directory.
+        let tmp = temp_repo();
+        fs::remove_dir_all(tmp.path().join("archaeology")).unwrap();
+
+        let dragon = create_dragon(tmp.path(), "Post-clone risk").unwrap();
+
+        assert_eq!(dragon.sequence, 1);
+        assert!(tmp.path().join(&dragon.relative_path).is_file());
+    }
+
+    #[test]
+    fn non_directory_at_managed_path_is_a_conflict() {
         let tmp = temp_repo();
         fs::remove_dir(tmp.path().join(DRAGONS_CLOSED_DIR)).unwrap();
+        fs::write(tmp.path().join(DRAGONS_CLOSED_DIR), "not a directory").unwrap();
 
         let err = create_dragon(tmp.path(), "Any title").unwrap_err();
 
-        match err {
-            Error::MalformedArtifact { path, reason } => {
-                assert!(path.ends_with(DRAGONS_CLOSED_DIR), "{path:?}");
-                assert!(reason.contains("strata init"), "{reason}");
-            }
-            other => panic!("expected malformed artifact, got {other:?}"),
-        }
+        assert!(matches!(err, Error::ArtifactConflict { .. }), "{err:?}");
     }
 
     #[test]
