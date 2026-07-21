@@ -23,11 +23,23 @@ dragons record what resolved them. The interim prose convention works for
 humans but is not machine-parseable, so no doctor check or graph
 projection over references can exist until this is decided.
 
+Update (2026-07-21): the comment-thread specimen (idea 11,
+`cmt-transition-crash-contract`) surfaced a further dimension. Thread
+entries wanted to be cited from canonical artifacts ("comments 1" in a
+sprint amendment), but entries have no addressable identity outside
+their thread file. Per-entry headings already yield tooling-free URL
+fragments (`0001-thread.md#cme-entry-id` renders on GitHub), so the
+grammar question now includes whether reference targets admit
+sub-artifact fragments and whether the entry-heading form is part of
+the reference surface.
+
 ## Question
 
 What concrete inline marker syntax encodes untyped references, and what
 initial typed edge vocabulary — with its front-matter encoding — should
-canonical artifacts use?
+canonical artifacts use? Does the target grammar admit sub-artifact
+fragments (such as comment-thread entry ids), and if so, with what
+orphaning semantics when the fragment's artifact is restructured?
 
 ## Constraints
 

@@ -112,3 +112,40 @@ which adopt the idea:
 - Threads gravitated to the standard lifecycle-directory convention
   (`resolved/` holding `status: resolved`), more weight for declarative
   collection specs (idea 10).
+
+## Open representation questions (2026-07-21)
+
+Raised in discussion of the specimen; none are settled by it.
+
+- **Entry identity.** Entries need addressable ids in the reference
+  model regardless of representation: the sprint 2 amendment wanted to
+  cite one entry and could only say "comments 1" in prose. The
+  heading-per-entry form already yields tooling-free URL fragments
+  (`0001-thread.md#cme-entry-id` renders on GitHub). Whether reference
+  targets admit sub-artifact fragments, and the entry-heading grammar
+  itself, are promoted into dragon 3's question (update recorded
+  there).
+- **Canonical form.** Three candidates, in tension between the thread's
+  row-oriented structure and its narrative payload:
+  1. one Markdown file per thread with hardened entry headings — what
+     the specimen did; narrative wins, structure is convention;
+  2. JSONL rows with Strata pretty-printing the parent plus threads —
+     the honest structural fit for append-only records, and it would be
+     the first non-Markdown collection, finally exercising decision 3's
+     format-independence invariant; but multi-paragraph review prose as
+     escaped JSON strings fails the raw-PR-diff readability test
+     (decision 6's own acceptance criterion, and the not-hostage
+     invariant in miniature) in exactly the context where review
+     discussion is read;
+  3. entry-per-file, thread-as-directory — the maildir-versus-mbox
+     tradeoff: concurrent commenters create distinct files, so merges
+     need no tail resolution at all; entries get file-grain identity;
+     cost is many small files plus explicit ordering metadata. Most
+     attractive if concurrent multi-agent commenting is the real
+     workload.
+- **Canonical/projection direction.** The Markdown and JSONL forms are
+  mechanically derivable from each other, so the choice is which is
+  canonical. The not-hostage test favors the human-readable form as
+  canonical with a structured JSONL projection derived from it —
+  inverting the pretty-print direction — since derived projections are
+  cheap and disposable by decision 1.
