@@ -77,3 +77,38 @@ first-consumer-introduces-the-edge rule. Prior art: W3C Web Annotation
 Data Model (TextQuoteSelector), Hypothesis anchoring, GitHub review
 comments' outdated-anchor semantics. The sprint 2 external review
 critique is the live motivating instance.
+
+## Specimen findings (2026-07-21)
+
+The motivating critique was run end-to-end as a provisional specimen:
+`archaeology/comments/resolved/0001-transition-crash-contract.md`
+(`cmt-transition-crash-contract`), anchored to
+`tsk-lifecycle-transitions`, resolved with its conclusions promoted to
+decision 8, dragon 4, and sprint 2 amendments. Format lessons, none of
+which adopt the idea:
+
+- Per-entry metadata as nested `---` fenced blocks inside the body
+  collides with front-matter parsing conventions; a heading per entry
+  plus a plain key list worked and stays grep-able.
+- A `comments-on`/`target`/`relation` triple is redundant: decision 6
+  already makes typed edges front-matter fields, so a single
+  `comments-on: <stable-id>` suffices. The anchor is a separate
+  structure because it refines *where*, not *what*.
+- Quote anchors need whitespace normalization: Markdown hard-wrapping
+  means the exact quote spans a line break in the source, so exact
+  matching must be whitespace-insensitive or anchors break on rewrap.
+- The anchor quote appeared verbatim in both `sprint.md` and task 7 —
+  a quote selector alone does not identify the target; the typed edge
+  disambiguates and the prefix/suffix mattered on first use.
+- Successful resolution orphans the anchor by construction: promotion
+  rewrites the quoted text. Orphaned-after-resolution is the *expected*
+  terminal anchor state, which validates recording the optional
+  `git-blob` historical referent.
+- Resolution wants machine-legible structure (`disposition`,
+  `promoted-to`), not just prose — otherwise the conclusion is buried
+  in conversation, the exact anti-pattern this idea guards against.
+- Agent authorship needed provider/model/label; the label ("Lux",
+  "Claude") is decoration, echoing decision 6's frozen-label rule.
+- Threads gravitated to the standard lifecycle-directory convention
+  (`resolved/` holding `status: resolved`), more weight for declarative
+  collection specs (idea 10).

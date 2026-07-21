@@ -44,8 +44,11 @@ The implementation must:
 
 - move an artifact between lifecycle directories and rewrite exactly its
   front-matter `status`, preserving every other byte;
-- never lose content: at every failure point the artifact exists at
-  exactly one path with valid contents;
+- never lose content, per the failure-class contract of decision 8
+  (`dec-mutation-failure-classes`): after any returned error and under
+  abrupt process termination the artifact exists at exactly one path
+  with valid contents; power-loss durability stays out of scope
+  (dragon 4, `drg_01KY3C0S3JQKEMEB9BH6NVJ35F`);
 - refuse transitions on artifacts whose status and placement already
   disagree, directing the user to `doctor`;
 - keep `doctor` green across every successful transition;
@@ -66,3 +69,13 @@ This sprint does not implement:
 - chores, staleness metadata, or ledgers (idea 7);
 - fortune drawing from parked ideas — that waits for ideas to become a
   managed collection.
+
+## Amendments
+
+- 2026-07-21: the transition safety criterion is scoped by failure
+  class. External review (thread `cmt-transition-crash-contract`, the
+  idea 11 specimen) showed the original wording promised one atomicity
+  level across all failures, which no portable filesystem primitive can
+  deliver for an operation that changes both path and contents. The
+  refined contract is decision 8 (`dec-mutation-failure-classes`); the
+  residual power-loss exposure is dragon 4.
