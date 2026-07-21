@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 128" role="img" aria-label="Strata">
+  <defs>
+    <clipPath id="tile">
+      <rect x="0" y="0" width="128" height="128" rx="30"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#tile)">
+    <rect x="0" y="0" width="128" height="128" fill="#59351F"/>
+    <path d="M0,108 C26,102 48,112 70,105 C92,98 112,110 128,103 L128,0 L0,0 Z" fill="#86502F"/>
+    <path d="M0,84 C20,78 46,90 68,82 C90,74 110,88 128,80 L128,0 L0,0 Z" fill="#B37147"/>
+    <path d="M0,58 C24,50 44,64 66,56 C88,48 108,62 128,54 L128,0 L0,0 Z" fill="#D89B66"/>
+    <path d="M0,32 C22,24 42,38 64,30 C86,22 106,36 128,28 L128,0 L0,0 Z" fill="#EAC9A4"/>
+    <circle cx="30" cy="18" r="1.8" fill="#D8AF83"/>
+    <circle cx="94" cy="14" r="1.5" fill="#D8AF83"/>
+    <circle cx="52" cy="44" r="1.8" fill="#C08752"/>
+    <circle cx="104" cy="42" r="1.5" fill="#C08752"/>
+    <circle cx="24" cy="70" r="1.8" fill="#9C5F3B"/>
+    <circle cx="82" cy="68" r="1.5" fill="#9C5F3B"/>
+    <circle cx="46" cy="96" r="1.8" fill="#744225"/>
+    <circle cx="108" cy="94" r="1.5" fill="#744225"/>
+    <circle cx="34" cy="118" r="1.8" fill="#4A2B18"/>
+    <g>
+      <path d="M88,104 L98,114.5 L88,125 L78,114.5 Z" fill="#45B5AA"/>
+      <path d="M88,104 L98,114.5 L88,114.5 Z" fill="#7BD0C8"/>
+    </g>
+  </g>
+  <text x="164" y="87" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="66" font-weight="600" letter-spacing="3" fill="#292420">strata</text>
+</svg>
