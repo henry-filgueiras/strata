@@ -51,9 +51,14 @@ Git-aware by design.
 Effort metrics (wall-clock, tokens) are optional fields with an honesty
 norm: recorded only when the performing harness actually measured them —
 absent beats estimated, because fabricated effort data poisons the
-empirical well. The realistic payoff is same-chore trend detection ("the
-dependency refresh used to take ten minutes, now ninety — split or
-automate it"), not cross-chore performance comparison.
+empirical well. Two honest uses of the data: same-chore regression
+detection across runs ("the dependency refresh used to take ten minutes,
+now ninety — split or automate it"), and population-level cost auditing
+("this chore is a large share of total maintenance spend and may deserve
+an audit") — the latter flags magnitude, never cross-chore comparison of
+unlike work. The population audit can itself be a chore with its own
+ledger, which is self-referential in exactly the way the model should
+support.
 
 Open points if adopted: single-file JSON artifact versus Markdown +
 JSONL sidecar (the sidecar is the first multi-file payload — real
