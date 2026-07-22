@@ -268,6 +268,16 @@ Do not record:
 - temporary scratch reasoning;
 - ceremonial progress reports.
 
+Routine commands and first performances differ. When completing a task
+required a non-obvious invocation of an external interface — a `gh`
+call, a release upload, a migration — record the exact command in the
+task result. This is dated provenance, not automation: unlike a
+checked-in one-off script, it promises only that it worked on that day
+against that interface, so it cannot drift silently, and it remains
+discoverable and copy-paste-adaptable for the next performance. Automate
+only when recurrence demonstrates the need; the recurring form is a
+chore ledger (idea 7), one row per performance, not a script.
+
 ## Change discipline
 
 Prefer small, reviewable vertical slices.
