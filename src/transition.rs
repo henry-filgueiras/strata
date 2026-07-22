@@ -50,7 +50,7 @@ pub fn transition(
     display: &str,
     to: Status,
 ) -> Result<Transition, Error> {
-    let artifacts = read::scan(root, collection)?;
+    let artifacts = read::scan_collection(root, collection)?;
     let artifact = read::resolve(&artifacts, target, display)?;
     perform(root, collection, artifact, to)
 }

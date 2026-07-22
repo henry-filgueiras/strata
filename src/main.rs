@@ -23,7 +23,11 @@ fn run(command: &Command) -> Result<(), Error> {
     match command {
         Command::Init => init(),
         Command::New { collection, title } => new_artifact(*collection, title),
-        Command::List { collection, json } => list(*collection, *json),
+        Command::List {
+            collection,
+            json,
+            active,
+        } => list(*collection, *json, *active),
         Command::Show { reference, json } => show(reference, *json),
         Command::Doctor { json } => doctor(*json),
         Command::Close { reference } => close(reference),
@@ -40,6 +44,7 @@ fn scan(root: &std::path::Path, collection: Collection) -> Result<Vec<read::Arti
         Collection::Dragon => read::scan(root, &read::DRAGON),
         Collection::Idea => read::scan(root, &read::IDEA),
         Collection::Sprint => read::scan_sprints(root),
+        Collection::Task => read::scan_tasks(root),
     }
 }
 
@@ -58,6 +63,7 @@ fn verb_guidance(collection: Collection) -> &'static str {
         Collection::Dragon => "dragons close and reopen: use `strata close` or `strata reopen`",
         Collection::Idea => "ideas adopt or reject: use `strata adopt` or `strata reject`",
         Collection::Sprint => "sprints close: use `strata close`",
+        Collection::Task => "tasks close: use `strata close`",
     }
 }
 
@@ -85,6 +91,7 @@ fn transition(target: &ArtifactTarget, collection: Collection, to: Status) -> Re
             Collection::Dragon => &read::DRAGON,
             Collection::Idea => &read::IDEA,
             Collection::Sprint => &read::SPRINT,
+            Collection::Task => &read::TASK,
         },
         selector(target),
         &target.to_string(),
@@ -104,9 +111,11 @@ fn close(target: &ArtifactTarget) -> Result<(), Error> {
         ArtifactTarget::Id(id) => {
             let mut union = read::scan(&root, &read::DRAGON)?;
             union.extend(read::scan_sprints(&root)?);
+            union.extend(read::scan_tasks(&root)?);
             let artifact = read::resolve(&union, read::Selector::Id(id), id)?;
             match artifact.summary.kind.as_str() {
                 "sprint" => Collection::Sprint,
+                "task" => Collection::Task,
                 _ => Collection::Dragon,
             }
         }
@@ -122,6 +131,13 @@ fn close(target: &ArtifactTarget) -> Result<(), Error> {
         Collection::Sprint => {
             transition::close_sprint(&root, selector(target), &target.to_string())?
         }
+        Collection::Task => transition::transition(
+            &root,
+            &read::TASK,
+            selector(target),
+            &target.to_string(),
+            Status::Closed,
+        )?,
         Collection::Idea => {
             return Err(Error::InvalidInvocation {
                 message: format!(
@@ -218,6 +234,7 @@ fn new_artifact(collection: Collection, title: &str) -> Result<(), Error> {
         Collection::Dragon => artifact::create_dragon(&root, title)?,
         Collection::Idea => artifact::create_idea(&root, title)?,
         Collection::Sprint => artifact::create_sprint(&root, title)?,
+        Collection::Task => artifact::create_task(&root, title)?,
     };
     println!(
         "created {} at {}",
@@ -228,9 +245,29 @@ fn new_artifact(collection: Collection, title: &str) -> Result<(), Error> {
 }
 
 /// List a collection's artifacts and render the requested projection.
-fn list(collection: Collection, json: bool) -> Result<(), Error> {
+///
+/// `--active` narrows tasks to the active sprint's; it is meaningless for
+/// other collections and refused rather than ignored.
+fn list(collection: Collection, json: bool, active: bool) -> Result<(), Error> {
     let root = repo::discover(&cwd()?)?;
-    let artifacts = scan(&root, collection)?;
+    let mut artifacts = scan(&root, collection)?;
+    if active {
+        if collection != Collection::Task {
+            return Err(Error::InvalidInvocation {
+                message: format!(
+                    "`--active` filters tasks by the active sprint; it does \
+                     not apply to `strata list {}s`",
+                    collection.name()
+                ),
+            });
+        }
+        let sprints = read::scan_sprints(&root)?;
+        let active_id = sprints
+            .iter()
+            .find(|sprint| sprint.summary.status == Status::Active)
+            .map(|sprint| sprint.summary.id.clone());
+        artifacts.retain(|task| task.summary.sprint == active_id);
+    }
     if json {
         let summaries: Vec<_> = artifacts.iter().map(|a| &a.summary).collect();
         println!("{}", to_json(&summaries));
@@ -268,6 +305,7 @@ fn show(target: &ArtifactTarget, json: bool) -> Result<(), Error> {
             let mut all = read::scan(&root, &read::DRAGON)?;
             all.extend(read::scan(&root, &read::IDEA)?);
             all.extend(read::scan_sprints(&root)?);
+            all.extend(read::scan_tasks(&root)?);
             all
         }
     };

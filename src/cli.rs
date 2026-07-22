@@ -24,18 +24,22 @@ pub enum Command {
     Init,
     /// Create an artifact; Strata assigns its sequence, slug, and identity
     New {
-        /// Collection for the new artifact (`dragon`, `idea`, or `sprint`)
+        /// Collection for the new artifact (`dragon`, `idea`, `sprint`, or
+        /// `task`; tasks are created in the active sprint)
         collection: Collection,
         /// Human-readable title for the artifact
         title: String,
     },
     /// List the artifacts in a collection
     List {
-        /// Collection to list (`dragons`, `ideas`, or `sprints`)
+        /// Collection to list (`dragons`, `ideas`, `sprints`, or `tasks`)
         collection: Collection,
         /// Emit a deterministic JSON array instead of human-readable lines
         #[arg(long)]
         json: bool,
+        /// Tasks only: list only the active sprint's tasks
+        #[arg(long)]
+        active: bool,
     },
     /// Show one artifact
     Show {
@@ -53,10 +57,10 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Close an open dragon or an active sprint
+    /// Close an open dragon, an active sprint, or a pending task
     Close {
-        /// `dragon:sequence` or `sprint:sequence` reference, or a stable
-        /// artifact `id`
+        /// `dragon:sequence`, `sprint:sequence`, or `task:sequence`
+        /// reference, or a stable artifact `id`
         reference: ArtifactTarget,
     },
     /// Reopen a closed dragon
@@ -88,6 +92,7 @@ pub enum Collection {
     Dragon,
     Idea,
     Sprint,
+    Task,
 }
 
 impl Collection {
@@ -97,6 +102,7 @@ impl Collection {
             Collection::Dragon => "dragon",
             Collection::Idea => "idea",
             Collection::Sprint => "sprint",
+            Collection::Task => "task",
         }
     }
 }
@@ -109,9 +115,10 @@ impl FromStr for Collection {
             "dragon" | "dragons" => Ok(Collection::Dragon),
             "idea" | "ideas" => Ok(Collection::Idea),
             "sprint" | "sprints" => Ok(Collection::Sprint),
+            "task" | "tasks" => Ok(Collection::Task),
             other => Err(format!(
                 "unknown collection `{other}`; collections are: dragon, idea, \
-                 sprint"
+                 sprint, task"
             )),
         }
     }

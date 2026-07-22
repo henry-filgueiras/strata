@@ -33,7 +33,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use crate::error::Error;
-use crate::read::{Collection, DRAGON, IDEA, SPRINT, Status};
+use crate::read::{Collection, DRAGON, IDEA, SPRINT, Status, TASK};
 use crate::repo::{SPRINT_FILE, SPRINTS_DIR};
 
 /// Prefix for generated dragon identities.
@@ -138,15 +138,16 @@ pub fn create_sprint(root: &Path, title: &str) -> Result<NewArtifact, Error> {
     let sequence = max + 1;
     let id = format!("{SPRINT_ID_PREFIX}{}", ulid::Ulid::new());
     let created = jiff::Zoned::now().strftime("%Y-%m-%d").to_string();
-    let content = render_artifact(
-        &id,
+    let content = render_artifact(&Template {
+        id: &id,
         sequence,
-        SPRINT.kind,
-        Status::Active.name(),
-        &created,
+        kind: SPRINT.kind,
+        status: Status::Active.name(),
+        extra_fields: &[],
+        created: &created,
         title,
-        SECTIONS,
-    );
+        sections: SECTIONS,
+    });
 
     let dir_rel = format!("{SPRINTS_DIR}/{sequence:04}-{slug}");
     crate::repo::ensure_dir(root, &dir_rel, &mut Vec::new())?;
@@ -187,15 +188,16 @@ fn create(
     let id = format!("{id_prefix}{}", ulid::Ulid::new());
     let created = jiff::Zoned::now().strftime("%Y-%m-%d").to_string();
     let home_status = collection.states[0];
-    let content = render_artifact(
-        &id,
+    let content = render_artifact(&Template {
+        id: &id,
         sequence,
         kind,
-        home_status.name(),
-        &created,
+        status: home_status.name(),
+        extra_fields: &[],
+        created: &created,
         title,
         sections,
-    );
+    });
 
     // Git does not round-trip empty directories, so a cloned repository may
     // lack the destination; materialize it with the same conflict checks
@@ -209,6 +211,80 @@ fn create(
         id,
         sequence,
         relative_path: Path::new(collection.dir).join(filename),
+    })
+}
+
+/// Create a new pending task in the active sprint at `root`.
+///
+/// Tasks require an active sprint: the new file lands in its containment
+/// directory, stamps the sprint's stable id into the `sprint:` field, and
+/// takes the next display sequence globally across every sprint.
+pub fn create_task(root: &Path, title: &str) -> Result<NewArtifact, Error> {
+    const SECTIONS: &[&str] = &["Objective", "Acceptance criteria"];
+    let title = title.trim();
+    let slug = slugify(title).ok_or_else(|| Error::InvalidInvocation {
+        message: format!(
+            "cannot create a task titled `{title}`: the title must contain \
+             at least one ASCII letter or digit to derive a filename slug"
+        ),
+    })?;
+
+    let sprints = crate::read::scan_sprints(root)?;
+    let Some(active) = sprints
+        .iter()
+        .find(|sprint| sprint.summary.status == Status::Active)
+    else {
+        return Err(Error::InvalidInvocation {
+            message: "tasks belong to a sprint, and no sprint is active; \
+                      open one with `strata new sprint \"<goal>\"` first"
+                .into(),
+        });
+    };
+
+    let tasks = crate::read::scan_tasks(root)?;
+    let max = tasks
+        .iter()
+        .map(|task| task.summary.sequence)
+        .max()
+        .unwrap_or(0);
+    if max >= MAX_SEQUENCE {
+        return Err(Error::ArtifactConflict {
+            path: root.join(SPRINTS_DIR),
+            reason: format!(
+                "the task collection has exhausted the four-digit display \
+                 sequence space (last sequence is {MAX_SEQUENCE})"
+            ),
+        });
+    }
+    let sequence = max + 1;
+    let id = format!("{TASK_ID_PREFIX}{}", ulid::Ulid::new());
+    let created = jiff::Zoned::now().strftime("%Y-%m-%d").to_string();
+    let content = render_artifact(&Template {
+        id: &id,
+        sequence,
+        kind: TASK.kind,
+        status: Status::Pending.name(),
+        extra_fields: &[("sprint", &active.summary.id)],
+        created: &created,
+        title,
+        sections: SECTIONS,
+    });
+
+    let sprint_dir = active
+        .summary
+        .path
+        .rsplit_once('/')
+        .expect("sprint paths always contain a directory")
+        .0
+        .to_string();
+    let filename = format!("{sequence:04}-{slug}.md");
+    write_new(&root.join(&sprint_dir), &filename, &content)?;
+
+    Ok(NewArtifact {
+        kind: TASK.kind,
+        id,
+        sequence,
+        relative_path: Path::new(&sprint_dir).join(filename),
     })
 }
 
@@ -338,28 +414,52 @@ pub(crate) fn parse_dir_sequence(name: &str) -> Option<u32> {
     digits.parse().ok()
 }
 
-/// Render an artifact Markdown payload: front matter plus template sections.
-fn render_artifact(
-    id: &str,
+/// One artifact payload to render: front matter plus template sections.
+/// `extra_fields` land in the front matter after `status`, before
+/// `created`.
+struct Template<'a> {
+    id: &'a str,
     sequence: u32,
-    kind: &str,
-    status: &str,
-    created: &str,
-    title: &str,
-    sections: &[&str],
-) -> String {
+    kind: &'a str,
+    status: &'a str,
+    extra_fields: &'a [(&'a str, &'a str)],
+    created: &'a str,
+    title: &'a str,
+    sections: &'a [&'a str],
+}
+
+/// Render an artifact Markdown payload.
+fn render_artifact(template: &Template<'_>) -> String {
+    let Template {
+        id,
+        sequence,
+        kind,
+        status,
+        extra_fields,
+        created,
+        title,
+        sections,
+    } = template;
     let mut content = format!(
         "---\n\
          id: {id}\n\
          sequence: {sequence}\n\
          kind: {kind}\n\
-         status: {status}\n\
-         created: {created}\n\
+         status: {status}\n"
+    );
+    for (key, value) in *extra_fields {
+        content.push_str(key);
+        content.push_str(": ");
+        content.push_str(value);
+        content.push('\n');
+    }
+    content.push_str(&format!(
+        "created: {created}\n\
          ---\n\
          \n\
          # {title}\n"
-    );
-    for section in sections {
+    ));
+    for section in *sections {
         content.push_str("\n## ");
         content.push_str(section);
         content.push('\n');

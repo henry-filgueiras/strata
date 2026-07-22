@@ -289,6 +289,16 @@ pub fn scan(root: &Path, collection: &Collection) -> Result<Vec<Artifact>, Error
     Ok(artifacts)
 }
 
+/// Scan `collection` through the scanner its layout requires: flat files
+/// for dragons and ideas, containment directories for sprints and tasks.
+pub fn scan_collection(root: &Path, collection: &Collection) -> Result<Vec<Artifact>, Error> {
+    match collection.kind {
+        "sprint" => scan_sprints(root),
+        "task" => scan_tasks(root),
+        _ => scan(root, collection),
+    }
+}
+
 /// Parse every sprint in the repository at `root`, sorted by display
 /// sequence ascending, then path.
 ///

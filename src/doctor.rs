@@ -98,9 +98,58 @@ pub fn check(root: &Path) -> Result<Report, Error> {
         scan_dir(root, collection, &mut findings, &mut artifacts)?;
     }
     scan_sprints_dir(root, &mut findings, &mut artifacts)?;
+    scan_task_dirs(root, &mut findings, &mut artifacts)?;
 
     let artifacts_checked = artifacts.len();
     findings.extend(duplicate_findings(&artifacts));
+
+    // A task's `sprint:` field must name an existing sprint whose
+    // containment directory holds the file (decision 11).
+    let sprints: Vec<&Artifact> = artifacts
+        .iter()
+        .filter(|artifact| artifact.summary.kind == "sprint")
+        .collect();
+    let mut task_findings = Vec::new();
+    for task in artifacts
+        .iter()
+        .filter(|artifact| artifact.summary.kind == "task")
+    {
+        let Some(sprint_id) = task.summary.sprint.as_deref() else {
+            continue;
+        };
+        let Some(owner) = sprints.iter().find(|sprint| sprint.summary.id == sprint_id) else {
+            task_findings.push(Finding {
+                problem: "misfiled-task",
+                path: task.summary.path.clone(),
+                detail: format!(
+                    "the `sprint:` field names `{sprint_id}`, but no sprint \
+                     carries that id"
+                ),
+                severity: Severity::Error,
+            });
+            continue;
+        };
+        let owner_dir = owner
+            .summary
+            .path
+            .rsplit_once('/')
+            .map(|(dir, _)| dir)
+            .unwrap_or_default();
+        if task.summary.path.rsplit_once('/').map(|(dir, _)| dir) != Some(owner_dir) {
+            task_findings.push(Finding {
+                problem: "misfiled-task",
+                path: task.summary.path.clone(),
+                detail: format!(
+                    "the `sprint:` field names `{sprint_id}` ({}), but the \
+                     file sits outside that sprint's containment directory \
+                     `{owner_dir}`",
+                    owner.summary.reference()
+                ),
+                severity: Severity::Error,
+            });
+        }
+    }
+    findings.extend(task_findings);
 
     // At most one sprint may be active (the `new sprint` refusal, verified
     // here because a branch merge can produce the state no command allows).
@@ -324,6 +373,84 @@ fn scan_sprints_dir(
         ) {
             Ok(artifact) => artifacts.push(artifact),
             Err(error) => findings.push(finding_at(error, file_rel)),
+        }
+    }
+    Ok(())
+}
+
+/// Walk every sprint containment directory for task files, collecting
+/// per-file findings and cleanly parsed task artifacts. Structural
+/// problems with the containment directories themselves are
+/// [`scan_sprints_dir`]'s findings, reported once there, so this walk
+/// silently skips entries that are not well-formed task locations.
+fn scan_task_dirs(
+    root: &Path,
+    findings: &mut Vec<Finding>,
+    artifacts: &mut Vec<Artifact>,
+) -> Result<(), Error> {
+    let sprints_dir = root.join(crate::repo::SPRINTS_DIR);
+    let entries = match fs::read_dir(&sprints_dir) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(()),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|source| Error::Filesystem {
+            operation: "read directory entry".into(),
+            path: sprints_dir.clone(),
+            source,
+        })?;
+        let name = entry.file_name();
+        let Some(dir_name) = name.to_str() else {
+            continue;
+        };
+        if dir_name.starts_with('.')
+            || !entry.path().is_dir()
+            || crate::artifact::parse_dir_sequence(dir_name).is_none()
+        {
+            continue;
+        }
+        let dir_rel = format!("{}/{dir_name}", crate::repo::SPRINTS_DIR);
+        let dir = entry.path();
+        let task_entries = match fs::read_dir(&dir) {
+            Ok(task_entries) => task_entries,
+            Err(_) => continue,
+        };
+        for task_entry in task_entries {
+            let task_entry = task_entry.map_err(|source| Error::Filesystem {
+                operation: "read directory entry".into(),
+                path: dir.clone(),
+                source,
+            })?;
+            let task_name = task_entry.file_name();
+            let Some(task_name) = task_name.to_str() else {
+                findings.push(Finding {
+                    problem: "malformed-artifact",
+                    path: format!("{dir_rel}/{}", task_entry.file_name().to_string_lossy()),
+                    detail: "filename is not valid UTF-8".into(),
+                    severity: Severity::Error,
+                });
+                continue;
+            };
+            if task_name.starts_with('.') || task_name == crate::repo::SPRINT_FILE {
+                continue;
+            }
+            let path = dir.join(task_name);
+            if path.is_dir() {
+                findings.push(Finding {
+                    problem: "artifact-conflict",
+                    path: format!("{dir_rel}/{task_name}"),
+                    detail: "a directory sits inside a sprint containment \
+                             directory; tasks file directly in their sprint's \
+                             directory (decision 11)"
+                        .into(),
+                    severity: Severity::Error,
+                });
+                continue;
+            }
+            match read::parse_artifact(&path, &dir_rel, task_name, &read::TASK) {
+                Ok(artifact) => artifacts.push(artifact),
+                Err(error) => findings.push(file_finding(error, &dir_rel, task_name)),
+            }
         }
     }
     Ok(())
@@ -955,6 +1082,37 @@ mod tests {
                 ("malformed-artifact", "archaeology/sprints/0002-empty"),
                 ("malformed-artifact", "archaeology/sprints/loose.md"),
             ]
+        );
+    }
+
+    #[test]
+    fn tasks_misfiled_outside_their_named_sprint_are_errors() {
+        let tmp = temp_repo();
+        seed_sprint(tmp.path(), "0001-a", 1, "closed");
+        seed_sprint(tmp.path(), "0002-b", 2, "active");
+        // The task names sprint 2 but sits in sprint 1's directory.
+        fs::write(
+            tmp.path()
+                .join(crate::repo::SPRINTS_DIR)
+                .join("0001-a")
+                .join("0001-wandering.md"),
+            "---\nid: tsk-wandering\nsequence: 1\nkind: task\nstatus: closed\nsprint: spr-2\ncreated: 2026-07-20\n---\n\n# Wandering\n",
+        )
+        .unwrap();
+
+        let report = check(tmp.path()).unwrap();
+
+        assert_eq!(
+            problems(&report),
+            vec![(
+                "misfiled-task",
+                "archaeology/sprints/0001-a/0001-wandering.md"
+            )]
+        );
+        assert!(
+            report.findings[0].detail.contains("0002-b"),
+            "{}",
+            report.findings[0].detail
         );
     }
 
