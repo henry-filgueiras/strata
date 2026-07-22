@@ -72,6 +72,16 @@ Both open points are promoted to dragon 3
 resolving decision should be recorded as an update here or as a successor
 decision.
 
+## Update (2026-07-22): open points resolved
+
+Decision 10 ([[dec-reference-syntax|reference syntax]]) is the
+successor that closes both open points: wikilink-style markers
+(`[[stable-id|label]]` bound, `[[kind:N]]` sugar), typed edges as
+front-matter fields carrying quoted bound markers, and an initial
+terminal-provenance vocabulary (`resolved-by`, `adopted-by`) with
+per-kind doctor semantics. The interim prose convention this decision
+established is retired for new writing.
+
 ## Consequences
 
 - Writing references correctly requires no tooling; writing them durably

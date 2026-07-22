@@ -191,7 +191,14 @@ Conventions:
 - do not reuse deleted or moved sequence numbers;
 - do not renumber existing artifacts cosmetically;
 - prefer moving records to terminal states over deleting history;
-- keep generated artifacts clearly distinguishable from canonical sources.
+- keep generated artifacts clearly distinguishable from canonical sources;
+- cross-references in new writing use wikilink markers per decision 10:
+  bound `[[stable-id|label]]` in prose, unbound sugar `[[kind:N]]`
+  until bound; typed edges (`resolved-by`, `adopted-by`) are
+  front-matter fields whose values are quoted bound markers; the
+  interim name-both-forms prose convention is retired, and existing
+  prose references are migrated only when a task already rewrites the
+  file.
 
 Ideas are never load-bearing. An idea is an uncommitted proposal: no typed
 dependency edge may target one, and rejecting or abandoning an idea must

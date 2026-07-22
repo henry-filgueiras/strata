@@ -2,7 +2,7 @@
 id: drg_01KY169X7W0YXJ5QFV4D1MK4FB
 sequence: 3
 kind: dragon
-status: open
+status: closed
 created: 2026-07-20
 ---
 
@@ -72,3 +72,16 @@ vocabulary, passes the diff-readability test, and retires the interim
 prose convention for new writing. Resolve before or alongside the first
 consumer: the ideas collection (task 0006), invariant artifacts, or
 doctor checks over references.
+
+## Resolution (2026-07-22)
+
+Decision 10 ([[dec-reference-syntax|reference syntax]]) fixes wikilink
+markers — `[[stable-id|label]]` bound, `[[kind:N]]` sugar, one grammar
+with binding as in-place repair — and an initial terminal-provenance
+vocabulary (`resolved-by`, `adopted-by`) encoded as quoted bound
+markers in front matter, each kind with doctor semantics defined up
+front. The sub-artifact fragment question is answered by deferral with
+`#` reserved in the target grammar, so the eventual extension is
+non-breaking; orphaning semantics wait for idea 11's adoption. The
+first consumer (the managed ideas collection) lands in the same
+sprint, meeting the before-or-alongside criterion.
