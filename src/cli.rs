@@ -24,14 +24,14 @@ pub enum Command {
     Init,
     /// Create an artifact; Strata assigns its sequence, slug, and identity
     New {
-        /// Collection for the new artifact (bootstrap supports `dragon`)
+        /// Collection for the new artifact (`dragon` or `idea`)
         collection: Collection,
         /// Human-readable title for the artifact
         title: String,
     },
     /// List the artifacts in a collection
     List {
-        /// Collection to list (`dragon` or `dragons`)
+        /// Collection to list (`dragons` or `ideas`)
         collection: Collection,
         /// Emit a deterministic JSON array instead of human-readable lines
         #[arg(long)]
@@ -53,15 +53,27 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Close an open artifact, moving it into its closed lifecycle state
+    /// Close an open dragon, moving it into its closed lifecycle state
     Close {
-        /// `collection:sequence` reference (e.g. `dragon:7`) or a stable
+        /// `dragon:sequence` reference (e.g. `dragon:7`) or a stable
         /// artifact `id`
         reference: ArtifactTarget,
     },
-    /// Reopen a closed artifact, moving it back into its open lifecycle state
+    /// Reopen a closed dragon, moving it back into its open lifecycle state
     Reopen {
-        /// `collection:sequence` reference (e.g. `dragon:7`) or a stable
+        /// `dragon:sequence` reference (e.g. `dragon:7`) or a stable
+        /// artifact `id`
+        reference: ArtifactTarget,
+    },
+    /// Adopt a parked idea, moving it into its terminal adopted state
+    Adopt {
+        /// `idea:sequence` reference (e.g. `idea:12`) or a stable
+        /// artifact `id`
+        reference: ArtifactTarget,
+    },
+    /// Reject a parked idea, moving it into its terminal rejected state
+    Reject {
+        /// `idea:sequence` reference (e.g. `idea:12`) or a stable
         /// artifact `id`
         reference: ArtifactTarget,
     },
@@ -69,12 +81,11 @@ pub enum Command {
     Fortune,
 }
 
-/// Artifact collections known to the bootstrap implementation.
-///
-/// Bootstrap hardcodes a single collection while the workflow is proven.
+/// Artifact collections known to this implementation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Collection {
     Dragon,
+    Idea,
 }
 
 impl Collection {
@@ -82,6 +93,7 @@ impl Collection {
     pub fn name(self) -> &'static str {
         match self {
             Collection::Dragon => "dragon",
+            Collection::Idea => "idea",
         }
     }
 }
@@ -92,8 +104,9 @@ impl FromStr for Collection {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "dragon" | "dragons" => Ok(Collection::Dragon),
+            "idea" | "ideas" => Ok(Collection::Idea),
             other => Err(format!(
-                "unknown collection `{other}`; bootstrap collections are: dragon"
+                "unknown collection `{other}`; collections are: dragon, idea"
             )),
         }
     }

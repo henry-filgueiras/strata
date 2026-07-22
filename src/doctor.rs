@@ -25,8 +25,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::error::Error;
-use crate::read::{self, Artifact, Status};
-use crate::repo::{DRAGONS_CLOSED_DIR, DRAGONS_OPEN_DIR};
+use crate::read::{self, Artifact, Collection, Status};
 
 /// One validation problem. Serialized field names and order are a
 /// compatibility surface pinned by tests; `path` is repository-relative
@@ -68,11 +67,17 @@ pub fn check(root: &Path) -> Result<Report, Error> {
     let mut findings = Vec::new();
     let mut artifacts = Vec::new();
 
-    for (dir_rel, status) in [
-        (DRAGONS_OPEN_DIR, Status::Open),
-        (DRAGONS_CLOSED_DIR, Status::Closed),
-    ] {
-        scan_dir(root, dir_rel, status, &mut findings, &mut artifacts)?;
+    for collection in [&read::DRAGON, &read::IDEA] {
+        for (status, dir_rel) in collection.states {
+            scan_dir(
+                root,
+                collection,
+                dir_rel,
+                *status,
+                &mut findings,
+                &mut artifacts,
+            )?;
+        }
     }
 
     let artifacts_checked = artifacts.len();
@@ -88,6 +93,7 @@ pub fn check(root: &Path) -> Result<Report, Error> {
 /// parsed artifacts.
 fn scan_dir(
     root: &Path,
+    collection: &Collection,
     dir_rel: &str,
     status: Status,
     findings: &mut Vec<Finding>,
@@ -136,7 +142,7 @@ fn scan_dir(
         if name_str.starts_with('.') {
             continue;
         }
-        match read::parse_dragon(&dir.join(name_str), dir_rel, name_str, status) {
+        match read::parse_artifact(&dir.join(name_str), dir_rel, name_str, collection, status) {
             Ok(artifact) => artifacts.push(artifact),
             Err(error) => findings.push(file_finding(error, dir_rel, name_str)),
         }
@@ -174,14 +180,17 @@ fn file_finding(error: Error, dir_rel: &str, name: &str) -> Finding {
 /// Repository-wide duplicate checks over the cleanly parsed artifacts:
 /// one finding per duplicated stable identity and per duplicated display
 /// sequence, anchored at the first involved path and naming every other.
+/// Identities are global — a stable id must be unique across collections —
+/// while display sequences are collection-scoped, so `dragon:1` and
+/// `idea:1` coexist.
 fn duplicate_findings(artifacts: &[Artifact]) -> Vec<Finding> {
     let mut by_id: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    let mut by_sequence: BTreeMap<u32, Vec<&str>> = BTreeMap::new();
+    let mut by_sequence: BTreeMap<(&str, u32), Vec<&str>> = BTreeMap::new();
     for artifact in artifacts {
         let summary = &artifact.summary;
         by_id.entry(&summary.id).or_default().push(&summary.path);
         by_sequence
-            .entry(summary.sequence)
+            .entry((&summary.kind, summary.sequence))
             .or_default()
             .push(&summary.path);
     }
@@ -197,14 +206,14 @@ fn duplicate_findings(artifacts: &[Artifact]) -> Vec<Finding> {
             });
         }
     }
-    for (sequence, mut paths) in by_sequence {
+    for ((kind, sequence), mut paths) in by_sequence {
         if paths.len() > 1 {
             paths.sort_unstable();
             findings.push(Finding {
                 problem: "duplicate-sequence",
                 path: paths[0].into(),
                 detail: format!(
-                    "display sequence {sequence} is shared by: {}",
+                    "display sequence {kind}:{sequence} is shared by: {}",
                     paths.join(", ")
                 ),
             });
@@ -217,6 +226,7 @@ fn duplicate_findings(artifacts: &[Artifact]) -> Vec<Finding> {
 mod tests {
     use super::*;
     use crate::repo;
+    use crate::repo::{DRAGONS_CLOSED_DIR, DRAGONS_OPEN_DIR, IDEAS_ADOPTED_DIR, IDEAS_PARKED_DIR};
 
     fn temp_repo() -> tempfile::TempDir {
         let tmp = tempfile::tempdir().expect("create temporary directory");
@@ -343,6 +353,90 @@ mod tests {
                 finding.detail
             );
         }
+    }
+
+    fn idea_markdown(id: &str, sequence: u32, status: &str, title: &str) -> String {
+        format!(
+            "---\nid: {id}\nsequence: {sequence}\nkind: idea\nstatus: {status}\ncreated: 2026-07-20\n---\n\n# {title}\n"
+        )
+    }
+
+    fn seed_idea(root: &Path, dir: &str, name: &str, content: &str) {
+        fs::create_dir_all(root.join(dir)).unwrap();
+        fs::write(root.join(dir).join(name), content).unwrap();
+    }
+
+    #[test]
+    fn ideas_are_validated_alongside_dragons() {
+        let tmp = temp_repo();
+        seed_idea(
+            tmp.path(),
+            IDEAS_PARKED_DIR,
+            "0001-fine.md",
+            &idea_markdown("idea-fine", 1, "parked", "Fine"),
+        );
+        // Adopted status in the parked directory: lifecycle mismatch.
+        seed_idea(
+            tmp.path(),
+            IDEAS_PARKED_DIR,
+            "0002-misplaced.md",
+            &idea_markdown("idea-misplaced", 2, "adopted", "Misplaced"),
+        );
+        // A dragon status is not an idea status.
+        seed_idea(
+            tmp.path(),
+            IDEAS_ADOPTED_DIR,
+            "0003-wrong-status.md",
+            &idea_markdown("idea-wrong", 3, "open", "Wrong status"),
+        );
+
+        let report = check(tmp.path()).unwrap();
+
+        assert_eq!(report.artifacts_checked, 1);
+        assert_eq!(
+            problems(&report),
+            vec![
+                (
+                    "malformed-artifact",
+                    "archaeology/ideas/adopted/0003-wrong-status.md"
+                ),
+                (
+                    "malformed-artifact",
+                    "archaeology/ideas/parked/0002-misplaced.md"
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn display_sequences_are_collection_scoped_but_ids_are_global() {
+        let tmp = temp_repo();
+        // dragon:1 and idea:1 legitimately coexist.
+        write_dragon(
+            tmp.path(),
+            DRAGONS_OPEN_DIR,
+            "0001-risk.md",
+            &dragon_markdown("shared-id", 1, "open", "Risk"),
+        );
+        // The same stable id across collections is corruption.
+        seed_idea(
+            tmp.path(),
+            IDEAS_PARKED_DIR,
+            "0001-idea.md",
+            &idea_markdown("shared-id", 1, "parked", "Idea"),
+        );
+
+        let report = check(tmp.path()).unwrap();
+
+        assert_eq!(
+            problems(&report),
+            vec![("duplicate-id", "archaeology/dragons/open/0001-risk.md")]
+        );
+        assert!(
+            report.findings[0].detail.contains("shared-id"),
+            "{}",
+            report.findings[0].detail
+        );
     }
 
     #[test]

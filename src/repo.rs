@@ -26,7 +26,18 @@ pub const DRAGONS_OPEN_DIR: &str = "archaeology/dragons/open";
 /// Root-relative directory holding closed dragon artifacts.
 pub const DRAGONS_CLOSED_DIR: &str = "archaeology/dragons/closed";
 
-/// Directories every bootstrap repository must contain.
+/// Root-relative directory holding parked idea artifacts.
+pub const IDEAS_PARKED_DIR: &str = "archaeology/ideas/parked";
+
+/// Root-relative directory holding adopted idea artifacts.
+pub const IDEAS_ADOPTED_DIR: &str = "archaeology/ideas/adopted";
+
+/// Root-relative directory holding rejected idea artifacts.
+pub const IDEAS_REJECTED_DIR: &str = "archaeology/ideas/rejected";
+
+/// Directories every bootstrap repository must contain. Idea lifecycle
+/// directories are deliberately absent: they are created on first use, the
+/// convention adopted after dragon 2 showed Git drops empty directories.
 pub const REQUIRED_DIRS: [&str; 2] = [DRAGONS_OPEN_DIR, DRAGONS_CLOSED_DIR];
 
 /// What an [`init`] invocation changed.

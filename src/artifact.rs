@@ -1,17 +1,18 @@
-//! Artifact creation for the bootstrap `dragon` collection.
+//! Artifact creation for managed collections.
 //!
 //! Strata owns the mechanics callers must not hand-roll: display sequence
 //! allocation, deterministic slugging, stable identity assignment, and safe
-//! writes. The filesystem stays canonical — a created dragon is an ordinary
-//! Markdown file with YAML-style front matter.
+//! writes. The filesystem stays canonical — a created artifact is an
+//! ordinary Markdown file with YAML-style front matter.
 //!
 //! # Identity
 //!
 //! The `id` front matter field is an opaque stable string. Artifacts created
-//! here use a `drg_` prefix followed by an uppercase ULID. Pre-existing
-//! hand-seeded identifiers (for example `drg-bootstrap-branch-collisions`)
-//! remain valid: nothing in Strata may require every `id` to be a ULID, and
-//! there is no second identity field.
+//! here use a per-collection prefix (`drg_`, `ide_`) followed by an
+//! uppercase ULID. Pre-existing hand-seeded identifiers (for example
+//! `drg-bootstrap-branch-collisions` or `idea-strata-fortune`) remain valid:
+//! nothing in Strata may require every `id` to be a ULID, and there is no
+//! second identity field.
 //!
 //! # Concurrency boundary
 //!
@@ -32,18 +33,23 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use crate::error::Error;
-use crate::repo::{DRAGONS_CLOSED_DIR, DRAGONS_OPEN_DIR};
+use crate::read::{Collection, DRAGON, IDEA};
 
 /// Prefix for generated dragon identities.
 pub const DRAGON_ID_PREFIX: &str = "drg_";
 
+/// Prefix for generated idea identities.
+pub const IDEA_ID_PREFIX: &str = "ide_";
+
 /// Largest display sequence representable by four-digit filename prefixes.
 pub const MAX_SEQUENCE: u32 = 9999;
 
-/// A successfully created dragon artifact.
+/// A successfully created artifact.
 #[derive(Debug)]
-pub struct NewDragon {
-    /// Stable opaque identity, `drg_` + uppercase ULID.
+pub struct NewArtifact {
+    /// Canonical singular kind name, e.g. `dragon`.
+    pub kind: &'static str,
+    /// Stable opaque identity: collection prefix + uppercase ULID.
     pub id: String,
     /// Collection-scoped display sequence.
     pub sequence: u32,
@@ -51,45 +57,74 @@ pub struct NewDragon {
     pub relative_path: PathBuf,
 }
 
-impl NewDragon {
+impl NewArtifact {
     /// Human reference for the created artifact, e.g. `dragon:2`.
     pub fn reference(&self) -> String {
-        format!("dragon:{}", self.sequence)
+        format!("{}:{}", self.kind, self.sequence)
     }
 }
 
 /// Create a new open dragon in the repository at `root`.
+pub fn create_dragon(root: &Path, title: &str) -> Result<NewArtifact, Error> {
+    const SECTIONS: &[&str] = &["Context", "Question", "Constraints", "Resolution criteria"];
+    create(root, &DRAGON, DRAGON_ID_PREFIX, SECTIONS, title)
+}
+
+/// Create a new parked idea in the repository at `root`.
+pub fn create_idea(root: &Path, title: &str) -> Result<NewArtifact, Error> {
+    const SECTIONS: &[&str] = &["Problem", "Sketch", "Evidence"];
+    create(root, &IDEA, IDEA_ID_PREFIX, SECTIONS, title)
+}
+
+/// Create a new artifact in its collection's home lifecycle state.
 ///
-/// Allocates `max(existing sequence) + 1` across the open and closed dragon
-/// directories, derives a deterministic kebab-case slug from `title`,
+/// Allocates `max(existing sequence) + 1` across every lifecycle directory
+/// of the collection, derives a deterministic kebab-case slug from `title`,
 /// assigns a fresh prefixed ULID identity, and writes the Markdown template
 /// through a temporary file with an atomic no-clobber persist. Neither
 /// `.strata.toml` nor any existing artifact is modified.
-pub fn create_dragon(root: &Path, title: &str) -> Result<NewDragon, Error> {
+fn create(
+    root: &Path,
+    collection: &Collection,
+    id_prefix: &str,
+    sections: &[&str],
+    title: &str,
+) -> Result<NewArtifact, Error> {
     let title = title.trim();
+    let kind = collection.kind;
     let slug = slugify(title).ok_or_else(|| Error::InvalidInvocation {
         message: format!(
-            "cannot create a dragon titled `{title}`: the title must contain \
+            "cannot create a {kind} titled `{title}`: the title must contain \
              at least one ASCII letter or digit to derive a filename slug"
         ),
     })?;
 
-    let sequence = next_sequence(root)?;
-    let id = format!("{DRAGON_ID_PREFIX}{}", ulid::Ulid::new());
+    let sequence = next_sequence(root, collection)?;
+    let id = format!("{id_prefix}{}", ulid::Ulid::new());
     let created = jiff::Zoned::now().strftime("%Y-%m-%d").to_string();
-    let content = render_dragon(&id, sequence, &created, title);
+    let (home_status, home_dir) = collection.states[0];
+    let content = render_artifact(
+        &id,
+        sequence,
+        kind,
+        home_status.name(),
+        &created,
+        title,
+        sections,
+    );
 
     // Git does not round-trip empty directories, so a cloned repository may
     // lack the destination; materialize it with the same conflict checks
     // `init` uses.
-    crate::repo::ensure_dir(root, DRAGONS_OPEN_DIR, &mut Vec::new())?;
+    crate::repo::ensure_dir(root, home_dir, &mut Vec::new())?;
     let filename = format!("{sequence:04}-{slug}.md");
-    write_new(&root.join(DRAGONS_OPEN_DIR), &filename, &content)?;
+    write_new(&root.join(home_dir), &filename, &content)?;
 
-    Ok(NewDragon {
+    Ok(NewArtifact {
+        kind,
         id,
         sequence,
-        relative_path: Path::new(DRAGONS_OPEN_DIR).join(filename),
+        relative_path: Path::new(home_dir).join(filename),
     })
 }
 
@@ -116,19 +151,20 @@ pub fn slugify(title: &str) -> Option<String> {
     if slug.is_empty() { None } else { Some(slug) }
 }
 
-/// Allocate the next display sequence by scanning both managed dragon
-/// directories, refusing to exceed the four-digit space.
-fn next_sequence(root: &Path) -> Result<u32, Error> {
+/// Allocate the next display sequence by scanning every lifecycle directory
+/// of the collection, refusing to exceed the four-digit space.
+fn next_sequence(root: &Path, collection: &Collection) -> Result<u32, Error> {
     let mut max = 0u32;
-    for dir in [DRAGONS_OPEN_DIR, DRAGONS_CLOSED_DIR] {
-        max = max.max(max_sequence_in(&root.join(dir))?);
+    for (_, dir) in collection.states {
+        max = max.max(max_sequence_in(&root.join(dir), collection.kind)?);
     }
     if max >= MAX_SEQUENCE {
         return Err(Error::ArtifactConflict {
-            path: root.join(DRAGONS_OPEN_DIR),
+            path: root.join(collection.states[0].1),
             reason: format!(
-                "the dragon collection has exhausted the four-digit display \
-                 sequence space (last sequence is {MAX_SEQUENCE})"
+                "the {} collection has exhausted the four-digit display \
+                 sequence space (last sequence is {MAX_SEQUENCE})",
+                collection.kind
             ),
         });
     }
@@ -143,15 +179,15 @@ fn next_sequence(root: &Path) -> Result<u32, Error> {
 /// dragon filename; malformed names are a typed error naming the path,
 /// never silently skipped. Entries starting with `.` (editor and VCS
 /// metadata, abandoned temporaries) are not artifacts and are ignored.
-fn max_sequence_in(dir: &Path) -> Result<u32, Error> {
+fn max_sequence_in(dir: &Path, kind: &str) -> Result<u32, Error> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(0),
         Err(source) if source.kind() == io::ErrorKind::NotADirectory => {
             return Err(Error::ArtifactConflict {
                 path: dir.to_path_buf(),
-                reason: "a non-directory object occupies a managed dragon \
-                         directory path; move it aside"
+                reason: "a non-directory object occupies a managed directory \
+                         path; move it aside"
                     .into(),
             });
         }
@@ -183,18 +219,17 @@ fn max_sequence_in(dir: &Path) -> Result<u32, Error> {
             continue;
         }
         let sequence = parse_sequence(name_str).ok_or_else(|| {
-            malformed(
-                "dragon filenames must be `NNNN-slug.md` with a four-digit \
+            malformed(format!(
+                "{kind} filenames must be `NNNN-slug.md` with a four-digit \
                  display sequence"
-                    .into(),
-            )
+            ))
         })?;
         max = max.max(sequence);
     }
     Ok(max)
 }
 
-/// Extract the display sequence from a valid dragon filename
+/// Extract the display sequence from a valid artifact filename
 /// (`NNNN-slug.md`), or `None` when the name does not conform.
 pub(crate) fn parse_sequence(name: &str) -> Option<u32> {
     let digits = name.get(..4)?;
@@ -208,27 +243,33 @@ pub(crate) fn parse_sequence(name: &str) -> Option<u32> {
     digits.parse().ok()
 }
 
-/// Render the dragon Markdown payload: front matter plus template sections.
-fn render_dragon(id: &str, sequence: u32, created: &str, title: &str) -> String {
-    format!(
+/// Render an artifact Markdown payload: front matter plus template sections.
+fn render_artifact(
+    id: &str,
+    sequence: u32,
+    kind: &str,
+    status: &str,
+    created: &str,
+    title: &str,
+    sections: &[&str],
+) -> String {
+    let mut content = format!(
         "---\n\
          id: {id}\n\
          sequence: {sequence}\n\
-         kind: dragon\n\
-         status: open\n\
+         kind: {kind}\n\
+         status: {status}\n\
          created: {created}\n\
          ---\n\
          \n\
-         # {title}\n\
-         \n\
-         ## Context\n\
-         \n\
-         ## Question\n\
-         \n\
-         ## Constraints\n\
-         \n\
-         ## Resolution criteria\n"
-    )
+         # {title}\n"
+    );
+    for section in sections {
+        content.push_str("\n## ");
+        content.push_str(section);
+        content.push('\n');
+    }
+    content
 }
 
 /// Write `content` to `dir/filename` through an exclusive temporary file in
@@ -271,6 +312,7 @@ fn write_new(dir: &Path, filename: &str, content: &str) -> Result<(), Error> {
 mod tests {
     use super::*;
     use crate::repo;
+    use crate::repo::{DRAGONS_CLOSED_DIR, DRAGONS_OPEN_DIR, IDEAS_PARKED_DIR, IDEAS_REJECTED_DIR};
 
     fn temp_repo() -> tempfile::TempDir {
         let tmp = tempfile::tempdir().expect("create temporary directory");
@@ -352,6 +394,73 @@ mod tests {
                 "missing `{heading}` in:\n{content}"
             );
         }
+    }
+
+    #[test]
+    fn create_idea_writes_a_parked_artifact_with_idea_template() {
+        let tmp = temp_repo();
+
+        let idea = create_idea(tmp.path(), "Declarative specs").unwrap();
+
+        assert_eq!(idea.sequence, 1);
+        assert_eq!(idea.reference(), "idea:1");
+        assert_eq!(
+            idea.relative_path,
+            Path::new(IDEAS_PARKED_DIR).join("0001-declarative-specs.md")
+        );
+        assert!(idea.id.starts_with(IDEA_ID_PREFIX), "{}", idea.id);
+        let content = fs::read_to_string(tmp.path().join(&idea.relative_path)).unwrap();
+        for line in ["kind: idea", "status: parked", "sequence: 1"] {
+            assert!(
+                content.contains(&format!("\n{line}\n")),
+                "missing `{line}` in:\n{content}"
+            );
+        }
+        for heading in [
+            "# Declarative specs",
+            "## Problem",
+            "## Sketch",
+            "## Evidence",
+        ] {
+            assert!(
+                content.contains(heading),
+                "missing `{heading}` in:\n{content}"
+            );
+        }
+    }
+
+    #[test]
+    fn idea_sequences_scan_every_lifecycle_directory_and_ignore_dragons() {
+        let tmp = temp_repo();
+        // A dragon with a high sequence must not influence idea allocation.
+        fs::write(
+            tmp.path().join(DRAGONS_OPEN_DIR).join("0009-dragon.md"),
+            "seeded",
+        )
+        .unwrap();
+        fs::create_dir_all(tmp.path().join(IDEAS_REJECTED_DIR)).unwrap();
+        fs::write(
+            tmp.path().join(IDEAS_REJECTED_DIR).join("0004-rejected.md"),
+            "seeded",
+        )
+        .unwrap();
+
+        let idea = create_idea(tmp.path(), "Next idea").unwrap();
+
+        assert_eq!(idea.sequence, 5, "must continue after the rejected maximum");
+    }
+
+    #[test]
+    fn create_idea_materializes_the_parked_directory_on_first_use() {
+        let tmp = temp_repo();
+        assert!(
+            !tmp.path().join(IDEAS_PARKED_DIR).exists(),
+            "init must not pre-create idea lifecycle directories"
+        );
+
+        let idea = create_idea(tmp.path(), "First idea").unwrap();
+
+        assert!(tmp.path().join(&idea.relative_path).is_file());
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Lifecycle transitions for the bootstrap `dragon` collection.
+//! Lifecycle transitions for managed collections.
 //!
 //! A transition moves an artifact between lifecycle directories and rewrites
 //! exactly its front-matter `status` value; every other byte is preserved.
@@ -30,8 +30,7 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use crate::error::Error;
-use crate::read::{self, Artifact, DragonRef, Status};
-use crate::repo::{DRAGONS_CLOSED_DIR, DRAGONS_OPEN_DIR};
+use crate::read::{self, Artifact, Collection, Selector, Status};
 
 /// A successfully performed lifecycle transition.
 #[derive(Debug)]
@@ -46,30 +45,25 @@ pub struct Transition {
     pub to_path: String,
 }
 
-/// Transition one dragon to `to`, resolving `target` like `strata show`.
+/// Transition one artifact of `collection` to `to`, resolving `target` like
+/// `strata show`.
 ///
 /// Resolution reuses the strict read pipeline: an artifact whose status and
 /// placement already disagree fails the scan as `malformed-artifact` naming
 /// the lifecycle mismatch and directing the user to `doctor` — a transition
 /// never silently repairs, and a re-run after an interrupted transition
-/// refuses the same way.
+/// refuses the same way. A transition the collection's lifecycle does not
+/// define (such as un-adopting an idea) is an invalid invocation.
 pub fn transition(
     root: &Path,
-    target: DragonRef<'_>,
+    collection: &Collection,
+    target: Selector<'_>,
     display: &str,
     to: Status,
 ) -> Result<Transition, Error> {
-    let artifacts = read::scan_dragons(root)?;
+    let artifacts = read::scan(root, collection)?;
     let artifact = read::resolve(&artifacts, target, display)?;
-    perform(root, artifact, to, &mut RealFs)
-}
-
-/// The lifecycle directory holding artifacts in `status`.
-fn lifecycle_dir(status: Status) -> &'static str {
-    match status {
-        Status::Open => DRAGONS_OPEN_DIR,
-        Status::Closed => DRAGONS_CLOSED_DIR,
-    }
+    perform(root, collection, artifact, to, &mut RealFs)
 }
 
 /// The two mutating primitives a transition performs, separated so tests can
@@ -107,6 +101,7 @@ impl TransitionFs for RealFs {
 /// Perform the transition of one resolved artifact.
 pub(crate) fn perform(
     root: &Path,
+    collection: &Collection,
     artifact: &Artifact,
     to: Status,
     fs_ops: &mut dyn TransitionFs,
@@ -121,12 +116,23 @@ pub(crate) fn perform(
             ),
         });
     }
+    if !collection.allows(from, to) {
+        return Err(Error::InvalidInvocation {
+            message: format!(
+                "`{reference}` is {from}, and `{from} -> {to}` is not a {} \
+                 transition; the {} lifecycle is: {}",
+                collection.kind,
+                collection.kind,
+                collection.transition_names()
+            ),
+        });
+    }
 
     let filename = src_rel
         .rsplit('/')
         .next()
         .expect("summary paths always contain a filename");
-    let dst_dir_rel = lifecycle_dir(to);
+    let dst_dir_rel = collection.dir_of(to);
     let dst_rel = format!("{dst_dir_rel}/{filename}");
     let src = root.join(src_rel);
     let dst = root.join(&dst_rel);
@@ -182,7 +188,7 @@ pub(crate) fn perform(
             Err(rollback_error) => Error::TransitionInterrupted {
                 path: src,
                 status: to.name(),
-                placement: lifecycle_dir(from),
+                placement: collection.dir_of(from),
                 destination: dst_rel,
                 rename_error,
                 rollback_error,
@@ -270,6 +276,7 @@ fn front_matter_region(content: &str) -> Option<(usize, usize)> {
 mod tests {
     use super::*;
     use crate::repo;
+    use crate::repo::{DRAGONS_CLOSED_DIR, DRAGONS_OPEN_DIR};
 
     fn temp_repo() -> tempfile::TempDir {
         let tmp = tempfile::tempdir().expect("create temporary directory");
@@ -288,7 +295,7 @@ mod tests {
     }
 
     fn scan_one(root: &Path) -> Artifact {
-        let artifacts = read::scan_dragons(root).unwrap();
+        let artifacts = read::scan(root, &read::DRAGON).unwrap();
         assert_eq!(artifacts.len(), 1);
         artifacts.into_iter().next().unwrap()
     }
@@ -367,6 +374,41 @@ mod tests {
     }
 
     #[test]
+    fn undefined_transitions_are_invalid_invocations_naming_the_lifecycle() {
+        let tmp = temp_repo();
+        fs::create_dir_all(tmp.path().join(crate::repo::IDEAS_ADOPTED_DIR)).unwrap();
+        seed(
+            tmp.path(),
+            crate::repo::IDEAS_ADOPTED_DIR,
+            "0001-settled.md",
+            "---\nid: idea-settled\nsequence: 1\nkind: idea\nstatus: adopted\ncreated: 2026-07-20\n---\n\n# Settled\n",
+        );
+
+        let err = transition(
+            tmp.path(),
+            &read::IDEA,
+            Selector::Sequence(1),
+            "idea:1",
+            Status::Rejected,
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, Error::InvalidInvocation { .. }), "{err:?}");
+        let message = err.to_string();
+        assert!(
+            message.contains("parked -> adopted, parked -> rejected"),
+            "the refusal must name the legal lifecycle: {message}"
+        );
+        assert!(
+            tmp.path()
+                .join(crate::repo::IDEAS_ADOPTED_DIR)
+                .join("0001-settled.md")
+                .is_file(),
+            "nothing may move"
+        );
+    }
+
+    #[test]
     fn failed_rename_rolls_back_to_the_original_bytes() {
         let tmp = temp_repo();
         let original = rich_dragon("open");
@@ -383,7 +425,14 @@ mod tests {
             replaces: 0,
         };
 
-        let err = perform(tmp.path(), &artifact, Status::Closed, &mut fs_ops).unwrap_err();
+        let err = perform(
+            tmp.path(),
+            &read::DRAGON,
+            &artifact,
+            Status::Closed,
+            &mut fs_ops,
+        )
+        .unwrap_err();
 
         assert!(matches!(err, Error::Filesystem { .. }), "{err:?}");
         assert!(
@@ -425,7 +474,14 @@ mod tests {
             replaces: 0,
         };
 
-        let err = perform(tmp.path(), &artifact, Status::Closed, &mut fs_ops).unwrap_err();
+        let err = perform(
+            tmp.path(),
+            &read::DRAGON,
+            &artifact,
+            Status::Closed,
+            &mut fs_ops,
+        )
+        .unwrap_err();
 
         let rendered = err.render();
         assert!(
@@ -459,7 +515,8 @@ mod tests {
         // A re-run refuses the mismatched artifact instead of repairing it.
         let rerun = transition(
             tmp.path(),
-            DragonRef::Sequence(1),
+            &read::DRAGON,
+            Selector::Sequence(1),
             "dragon:1",
             Status::Closed,
         )

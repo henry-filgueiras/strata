@@ -60,7 +60,8 @@ pub enum Error {
     /// No managed artifact matches the requested reference.
     #[error(
         "no artifact matches `{reference}`; \
-         run `strata list dragons` to see the artifacts Strata manages"
+         run `strata list dragons` or `strata list ideas` to see the \
+         artifacts Strata manages"
     )]
     ArtifactNotFound { reference: String },
 

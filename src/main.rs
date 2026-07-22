@@ -26,27 +26,64 @@ fn run(command: &Command) -> Result<(), Error> {
         Command::List { collection, json } => list(*collection, *json),
         Command::Show { reference, json } => show(reference, *json),
         Command::Doctor { json } => doctor(*json),
-        Command::Close { reference } => transition(reference, Status::Closed),
-        Command::Reopen { reference } => transition(reference, Status::Open),
+        Command::Close { reference } => transition(reference, Collection::Dragon, Status::Closed),
+        Command::Reopen { reference } => transition(reference, Collection::Dragon, Status::Open),
+        Command::Adopt { reference } => transition(reference, Collection::Idea, Status::Adopted),
+        Command::Reject { reference } => transition(reference, Collection::Idea, Status::Rejected),
         Command::Fortune => fortune(),
     }
 }
 
-/// Convert a command-line artifact target into a read-model reference.
-fn dragon_ref(target: &ArtifactTarget) -> read::DragonRef<'_> {
+/// The read model of a command-line collection.
+fn model(collection: Collection) -> &'static read::Collection {
+    match collection {
+        Collection::Dragon => &read::DRAGON,
+        Collection::Idea => &read::IDEA,
+    }
+}
+
+/// Convert a command-line artifact target into a read-model selector.
+fn selector(target: &ArtifactTarget) -> read::Selector<'_> {
     match target {
-        ArtifactTarget::Reference(reference) => read::DragonRef::Sequence(reference.sequence),
-        ArtifactTarget::Id(id) => read::DragonRef::Id(id),
+        ArtifactTarget::Reference(reference) => read::Selector::Sequence(reference.sequence),
+        ArtifactTarget::Id(id) => read::Selector::Id(id),
     }
 }
 
 /// Transition one artifact between lifecycle states and render the outcome.
-fn transition(target: &ArtifactTarget, to: Status) -> Result<(), Error> {
+///
+/// Each transition verb belongs to one collection's lifecycle; a reference
+/// into another collection is refused with the verbs that do apply, rather
+/// than resolved into a surprising move.
+fn transition(target: &ArtifactTarget, collection: Collection, to: Status) -> Result<(), Error> {
+    if let ArtifactTarget::Reference(reference) = target
+        && reference.collection != collection
+    {
+        let guidance = match reference.collection {
+            Collection::Dragon => "dragons close and reopen: use `strata close` or `strata reopen`",
+            Collection::Idea => "ideas adopt or reject: use `strata adopt` or `strata reject`",
+        };
+        return Err(Error::InvalidInvocation {
+            message: format!(
+                "`{target}` is a {} reference; {guidance}",
+                reference.collection
+            ),
+        });
+    }
     let root = repo::discover(&cwd()?)?;
-    let done = transition::transition(&root, dragon_ref(target), &target.to_string(), to)?;
+    let done = transition::transition(
+        &root,
+        model(collection),
+        selector(target),
+        &target.to_string(),
+        to,
+    )?;
     let verb = match to {
         Status::Closed => "closed",
         Status::Open => "reopened",
+        Status::Adopted => "adopted",
+        Status::Rejected => "rejected",
+        Status::Parked => "parked",
     };
     println!(
         "{verb} {} ({} -> {}) at {}",
@@ -58,7 +95,7 @@ fn transition(target: &ArtifactTarget, to: Status) -> Result<(), Error> {
 /// Surface one open dragon, weighted toward stale risks.
 fn fortune() -> Result<(), Error> {
     let root = repo::discover(&cwd()?)?;
-    let artifacts = read::scan_dragons(&root)?;
+    let artifacts = read::scan(&root, &read::DRAGON)?;
     let open: Vec<_> = artifacts
         .iter()
         .filter(|artifact| artifact.summary.status == Status::Open)
@@ -108,52 +145,62 @@ fn cwd() -> Result<PathBuf, Error> {
 /// Create an artifact in the enclosing repository and render the outcome.
 fn new_artifact(collection: Collection, title: &str) -> Result<(), Error> {
     let root = repo::discover(&cwd()?)?;
-    match collection {
-        Collection::Dragon => {
-            let dragon = artifact::create_dragon(&root, title)?;
-            println!(
-                "created {} at {}",
-                dragon.reference(),
-                dragon.relative_path.display()
-            );
-        }
-    }
+    let created = match collection {
+        Collection::Dragon => artifact::create_dragon(&root, title)?,
+        Collection::Idea => artifact::create_idea(&root, title)?,
+    };
+    println!(
+        "created {} at {}",
+        created.reference(),
+        created.relative_path.display()
+    );
     Ok(())
 }
 
 /// List a collection's artifacts and render the requested projection.
 fn list(collection: Collection, json: bool) -> Result<(), Error> {
     let root = repo::discover(&cwd()?)?;
-    match collection {
-        Collection::Dragon => {
-            let artifacts = read::scan_dragons(&root)?;
-            if json {
-                let summaries: Vec<_> = artifacts.iter().map(|a| &a.summary).collect();
-                println!("{}", to_json(&summaries));
-            } else if artifacts.is_empty() {
-                println!("no dragons found; create one with `strata new dragon \"<title>\"`");
-            } else {
-                for artifact in &artifacts {
-                    let summary = &artifact.summary;
-                    println!(
-                        "{}  {:<6}  {}  ({})",
-                        summary.reference(),
-                        summary.status,
-                        summary.title,
-                        summary.path
-                    );
-                }
-            }
+    let artifacts = read::scan(&root, model(collection))?;
+    if json {
+        let summaries: Vec<_> = artifacts.iter().map(|a| &a.summary).collect();
+        println!("{}", to_json(&summaries));
+    } else if artifacts.is_empty() {
+        println!(
+            "no {}s found; create one with `strata new {} \"<title>\"`",
+            collection.name(),
+            collection.name()
+        );
+    } else {
+        for artifact in &artifacts {
+            let summary = &artifact.summary;
+            println!(
+                "{}  {:<8}  {}  ({})",
+                summary.reference(),
+                summary.status,
+                summary.title,
+                summary.path
+            );
         }
     }
     Ok(())
 }
 
 /// Resolve one artifact reference and render it.
+///
+/// A `collection:sequence` reference scans exactly that collection; a bare
+/// stable id could live in any collection, so every managed collection is
+/// scanned and the id resolved over the union.
 fn show(target: &ArtifactTarget, json: bool) -> Result<(), Error> {
     let root = repo::discover(&cwd()?)?;
-    let artifacts = read::scan_dragons(&root)?;
-    let artifact = read::resolve(&artifacts, dragon_ref(target), &target.to_string())?;
+    let artifacts = match target {
+        ArtifactTarget::Reference(reference) => read::scan(&root, model(reference.collection))?,
+        ArtifactTarget::Id(_) => {
+            let mut all = read::scan(&root, &read::DRAGON)?;
+            all.extend(read::scan(&root, &read::IDEA)?);
+            all
+        }
+    };
+    let artifact = read::resolve(&artifacts, selector(target), &target.to_string())?;
     if json {
         println!("{}", to_json(&artifact.show_record()));
     } else {
