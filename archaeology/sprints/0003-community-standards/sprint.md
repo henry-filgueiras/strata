@@ -68,3 +68,16 @@ capability field is left as an observation, not a proposal.
 - Any Strata code changes; sprint 2 owns the engineering surface.
 - Automation that validates community files (`doctor` stays scoped to
   the archaeology).
+
+## Amendments
+
+- 2026-07-22: both taxonomy observations in the rationale were promoted
+  to parked ideas after owner review, so "an observation, not a
+  proposal" no longer describes them. Sprint-concurrency semantics —
+  concurrency valid, cross-sprint hard dependencies into unsettled work
+  a deterministic failure, an empty opening frontier advisory — are
+  idea 14 (`idea-cross-sprint-dependency-validity`). The executor gap
+  became a capability-affordance model with an up-for-grabs filter,
+  idea 15 (`idea-capability-constrained-work`). This sprint's own
+  concurrency is valid under idea 14's proposed rule: its scope is
+  disjoint from sprint 2's and no cross-sprint dependency exists.
