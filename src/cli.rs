@@ -77,7 +77,8 @@ pub enum Command {
         /// artifact `id`
         reference: ArtifactTarget,
     },
-    /// Surface one open dragon at random, favoring stale risks
+    /// Surface one open dragon or parked idea at random, favoring stale
+    /// artifacts
     Fortune,
 }
 

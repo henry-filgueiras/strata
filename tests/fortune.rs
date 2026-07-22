@@ -163,6 +163,115 @@ fn every_recall_names_an_open_dragon_and_never_a_closed_one() {
     }
 }
 
+fn idea(id: &str, sequence: u32, status: &str, title: &str, body: &str) -> String {
+    format!(
+        "---\nid: {id}\nsequence: {sequence}\nkind: idea\nstatus: {status}\ncreated: 2026-07-20\n---\n\n# {title}\n\n## Problem\n\n{body}\n"
+    )
+}
+
+fn seed_idea(root: &Path, dir: &str, name: &str, content: &str) {
+    fs::create_dir_all(root.join(dir)).unwrap();
+    fs::write(root.join(dir).join(name), content).unwrap();
+}
+
+#[test]
+fn a_lone_parked_idea_is_recalled_with_the_full_output_shape() {
+    let tmp = init_repo();
+    seed_idea(
+        tmp.path(),
+        "archaeology/ideas/parked",
+        "0001-lone-idea.md",
+        &idea(
+            "id-1",
+            1,
+            "parked",
+            "Lone idea",
+            "The proposal's first line.",
+        ),
+    );
+
+    let out = strata_in(tmp.path(), &["fortune"]);
+
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    for needle in [
+        "idea:1",
+        "Lone idea",
+        "archaeology/ideas/parked/0001-lone-idea.md",
+        "  The proposal's first line.",
+    ] {
+        assert!(text.contains(needle), "missing `{needle}`:\n{text}");
+    }
+}
+
+#[test]
+fn recalls_span_both_collections_and_never_terminal_states() {
+    let tmp = init_repo();
+    fs::write(
+        tmp.path().join(OPEN_DIR).join("0001-open.md"),
+        dragon("id-open", 1, "open", "Open risk", "Prose."),
+    )
+    .unwrap();
+    fs::write(
+        tmp.path().join(CLOSED_DIR).join("0002-closed.md"),
+        dragon("id-closed", 2, "closed", "Closed risk", "Prose."),
+    )
+    .unwrap();
+    seed_idea(
+        tmp.path(),
+        "archaeology/ideas/parked",
+        "0001-parked.md",
+        &idea("id-parked", 1, "parked", "Parked idea", "Prose."),
+    );
+    seed_idea(
+        tmp.path(),
+        "archaeology/ideas/adopted",
+        "0002-adopted.md",
+        &idea("id-adopted", 2, "adopted", "Adopted idea", "Prose."),
+    );
+
+    let mut seen_dragon = false;
+    let mut seen_idea = false;
+    for _ in 0..40 {
+        let out = strata_in(tmp.path(), &["fortune"]);
+        assert!(out.status.success(), "{}", stderr(&out));
+        let text = stdout(&out);
+        assert!(
+            !text.contains("Closed risk") && !text.contains("Adopted idea"),
+            "terminal states must never surface:\n{text}"
+        );
+        seen_dragon |= text.contains("Open risk");
+        seen_idea |= text.contains("Parked idea");
+        if seen_dragon && seen_idea {
+            break;
+        }
+    }
+    // Equal ages give each candidate probability 1/2 per draw; forty draws
+    // failing to surface both is ~2^-39 — vanishing, not flaky.
+    assert!(
+        seen_dragon && seen_idea,
+        "both collections must be reachable (dragon: {seen_dragon}, idea: {seen_idea})"
+    );
+}
+
+#[test]
+fn the_empty_state_names_both_collections() {
+    let tmp = init_repo();
+    seed_idea(
+        tmp.path(),
+        "archaeology/ideas/adopted",
+        "0001-adopted.md",
+        &idea("id-adopted", 1, "adopted", "Adopted idea", "Prose."),
+    );
+
+    let out = strata_in(tmp.path(), &["fortune"]);
+
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("no open dragons or parked ideas"), "{text}");
+    assert!(text.contains("strata new idea"), "{text}");
+}
+
 #[test]
 fn fortune_never_mutates_the_repository() {
     let tmp = init_repo();

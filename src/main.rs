@@ -92,23 +92,32 @@ fn transition(target: &ArtifactTarget, collection: Collection, to: Status) -> Re
     Ok(())
 }
 
-/// Surface one open dragon, weighted toward stale risks.
+/// Surface one open dragon or parked idea, weighted toward stale artifacts.
 fn fortune() -> Result<(), Error> {
     let root = repo::discover(&cwd()?)?;
-    let artifacts = read::scan(&root, &read::DRAGON)?;
-    let open: Vec<_> = artifacts
+    let dragons = read::scan(&root, &read::DRAGON)?;
+    let ideas = read::scan(&root, &read::IDEA)?;
+    // The candidate pool is every artifact still owed attention: open
+    // dragons and parked ideas. Terminal states never resurface.
+    let pool: Vec<_> = dragons
         .iter()
         .filter(|artifact| artifact.summary.status == Status::Open)
+        .chain(
+            ideas
+                .iter()
+                .filter(|artifact| artifact.summary.status == Status::Parked),
+        )
         .collect();
-    if open.is_empty() {
+    if pool.is_empty() {
         println!(
-            "no open dragons — nothing lurks; record new risks with \
-             `strata new dragon \"<title>\"`"
+            "no open dragons or parked ideas — nothing lurks; record a risk \
+             with `strata new dragon \"<title>\"` or park a proposal with \
+             `strata new idea \"<title>\"`"
         );
         return Ok(());
     }
     let today = jiff::Zoned::now().date();
-    let ages: Vec<_> = open
+    let ages: Vec<_> = pool
         .iter()
         .map(|artifact| fortune::age_days(&artifact.summary.created, today))
         .collect();
@@ -116,7 +125,7 @@ fn fortune() -> Result<(), Error> {
     // The draw's entropy comes from a fresh ULID's 80-bit random component;
     // selection itself is the pure, tested `pick`.
     let index = fortune::pick(&weights, ulid::Ulid::new().random());
-    let chosen = open[index];
+    let chosen = pool[index];
     println!("{}  {}", chosen.summary.reference(), chosen.summary.title);
     println!(
         "{}  {}",

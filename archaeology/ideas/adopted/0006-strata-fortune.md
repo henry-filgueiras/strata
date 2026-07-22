@@ -63,3 +63,12 @@ in sprint 2. Divergences from the sketch:
 
 The adoption hooks (shell greeting, MOTD, session preambles) remain
 placement suggestions, not shipped configuration.
+
+## Update (2026-07-22): first divergence resolved
+
+Task 16 ([[tsk-fortune-parked-ideas|fortune over parked ideas]])
+removed the open-dragons-only limitation once task 14 made ideas a
+managed collection: the candidate pool is now open dragons and parked
+ideas under the same weighting, and terminal states in both
+collections never surface. The remaining divergences (one weighted
+draw, no `--seed`/`--json`) stand unchanged.

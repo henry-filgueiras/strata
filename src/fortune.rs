@@ -1,9 +1,10 @@
-//! Ambient recall: pick one open dragon to resurface, favoring stale risks.
+//! Ambient recall: pick one open dragon or parked idea to resurface,
+//! favoring stale artifacts.
 //!
 //! Fortune is read-only advice — no mutation, no Git, no new state. The
 //! staleness bias is pinned structurally, not statistically: [`weight`] is a
-//! pure function from open-set metadata to weights (monotonic in age,
-//! nonzero for every open dragon), and the single random draw enters
+//! pure function from candidate metadata to weights (monotonic in age,
+//! nonzero for every candidate), and the single random draw enters
 //! [`pick`] as a parameter, so tests never sample distributions.
 //!
 //! Deliberately excluded until a real automation consumer exists (see task
