@@ -33,3 +33,22 @@ observation).
 - The community-standards checklist shows both items green.
 - The enforcement contact in `CODE_OF_CONDUCT.md` is confirmed or
   changed by the repository owner (an agent chose the default).
+
+## Amendments
+
+- 2026-07-22: the content-reports criterion is withdrawn as
+  inapplicable. The performing human could not find the toggle, and
+  GitHub's documentation confirms why: reported content can be enabled
+  only for public repositories owned by an *organization*
+  ("Managing how contributors report abuse in your organization's
+  repository"), and the corresponding checklist item appears only on
+  organization-owned community profiles. This repository is
+  user-owned, so no such setting or checklist item exists for it. The
+  original criterion was an agent transcription error — instructions
+  written for a repository class this repository is not in — and is
+  itself a small executor-gap lesson: the agent could not see the
+  target UI it was giving directions for. Progress otherwise: the
+  repository description is set (matching the `Cargo.toml`
+  description) and the community-standards checklist shows every
+  applicable item green. Remaining before closure: the CoC enforcement
+  contact ratification.
