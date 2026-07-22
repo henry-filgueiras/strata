@@ -20,25 +20,18 @@ pub const CONFIG_TEMPLATE: &str = "version = 1\n";
 /// The config schema version this build supports.
 pub const SUPPORTED_VERSION: i64 = 1;
 
-/// Root-relative directory holding open dragon artifacts.
-pub const DRAGONS_OPEN_DIR: &str = "archaeology/dragons/open";
+/// Root-relative directory holding every dragon artifact, regardless of
+/// lifecycle state (decision 11: placement is flat).
+pub const DRAGONS_DIR: &str = "archaeology/dragons";
 
-/// Root-relative directory holding closed dragon artifacts.
-pub const DRAGONS_CLOSED_DIR: &str = "archaeology/dragons/closed";
+/// Root-relative directory holding every idea artifact, regardless of
+/// lifecycle state (decision 11: placement is flat).
+pub const IDEAS_DIR: &str = "archaeology/ideas";
 
-/// Root-relative directory holding parked idea artifacts.
-pub const IDEAS_PARKED_DIR: &str = "archaeology/ideas/parked";
-
-/// Root-relative directory holding adopted idea artifacts.
-pub const IDEAS_ADOPTED_DIR: &str = "archaeology/ideas/adopted";
-
-/// Root-relative directory holding rejected idea artifacts.
-pub const IDEAS_REJECTED_DIR: &str = "archaeology/ideas/rejected";
-
-/// Directories every bootstrap repository must contain. Idea lifecycle
-/// directories are deliberately absent: they are created on first use, the
+/// Directories every bootstrap repository must contain. The ideas
+/// directory is deliberately absent: it is created on first use, the
 /// convention adopted after dragon 2 showed Git drops empty directories.
-pub const REQUIRED_DIRS: [&str; 2] = [DRAGONS_OPEN_DIR, DRAGONS_CLOSED_DIR];
+pub const REQUIRED_DIRS: [&str; 1] = [DRAGONS_DIR];
 
 /// What an [`init`] invocation changed.
 #[derive(Debug, Default)]
@@ -353,7 +346,7 @@ mod tests {
     fn existing_required_directories_are_accepted() {
         let tmp = temp_root();
         let root = tmp.path();
-        fs::create_dir_all(root.join("archaeology/dragons/open")).unwrap();
+        fs::create_dir_all(root.join("archaeology/dragons")).unwrap();
 
         init(root).unwrap();
 
@@ -483,7 +476,7 @@ mod tests {
     fn discover_finds_root_from_a_nested_directory() {
         let tmp = temp_root();
         init(tmp.path()).unwrap();
-        let nested = tmp.path().join("archaeology/dragons/open");
+        let nested = tmp.path().join("archaeology/dragons");
 
         let root = discover(&nested).unwrap();
 

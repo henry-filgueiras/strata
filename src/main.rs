@@ -87,7 +87,7 @@ fn transition(target: &ArtifactTarget, collection: Collection, to: Status) -> Re
     };
     println!(
         "{verb} {} ({} -> {}) at {}",
-        done.reference, done.from, done.to, done.to_path
+        done.reference, done.from, done.to, done.path
     );
     Ok(())
 }

@@ -1,32 +1,22 @@
 //! Lifecycle transitions for managed collections.
 //!
-//! A transition moves an artifact between lifecycle directories and rewrites
-//! exactly its front-matter `status` value; every other byte is preserved.
-//! The mutation contract is decision 8 (`dec-mutation-failure-classes`),
-//! executed as two atomic steps with the content rewrite as the commit
-//! point:
-//!
-//! 1. stage the full payload with the new `status` in a temporary beside
-//!    the source and atomically replace the source;
-//! 2. atomically rename the source into the target lifecycle directory.
-//!
-//! Placement follows status: an interrupted transition reads as "committed
-//! but not yet filed", `doctor` diagnoses the resulting status/placement
-//! mismatch precisely, and the front matter is authoritative for repair.
-//! When step 2 fails, the command rolls step 1 back; only a doubly-failed
-//! rollback leaves the mismatch behind, reported as the dedicated
-//! `transition-interrupted` error naming that state.
+//! A transition rewrites exactly the artifact's front-matter `status`
+//! value; every other byte is preserved and the file never moves —
+//! placement is flat per decision 11, so front matter is the sole
+//! lifecycle authority. The mutation is one safe write under the
+//! decision 8 failure classes: the full payload is staged in a temporary
+//! beside the artifact and atomically renamed over it, so a returned error
+//! leaves the original bytes untouched and an abrupt termination leaves
+//! exactly one valid artifact at its one path. The former two-step
+//! contract (rewrite, then file into a lifecycle directory) is retired
+//! with the lifecycle directories themselves.
 //!
 //! # Concurrency boundary
 //!
-//! The destination no-clobber guarantee is check-then-rename, matching
-//! creation's scan-then-write posture: bootstrap does not linearize
-//! concurrent Strata processes, and a file appearing in the destination
-//! between the check and the rename is outside the contract. Within one
-//! process the artifact exists at exactly one path at every instant.
+//! Bootstrap does not linearize concurrent Strata processes: two
+//! processes rewriting the same artifact race last-write-wins, matching
+//! creation's scan-then-write posture.
 
-use std::fs;
-use std::io::{self, Write};
 use std::path::Path;
 
 use crate::error::Error;
@@ -41,19 +31,18 @@ pub struct Transition {
     pub from: Status,
     /// Lifecycle state after the transition.
     pub to: Status,
-    /// Repository-relative destination path with `/` separators.
-    pub to_path: String,
+    /// Repository-relative path of the artifact, unchanged by the
+    /// transition, with `/` separators.
+    pub path: String,
 }
 
 /// Transition one artifact of `collection` to `to`, resolving `target` like
 /// `strata show`.
 ///
-/// Resolution reuses the strict read pipeline: an artifact whose status and
-/// placement already disagree fails the scan as `malformed-artifact` naming
-/// the lifecycle mismatch and directing the user to `doctor` — a transition
-/// never silently repairs, and a re-run after an interrupted transition
-/// refuses the same way. A transition the collection's lifecycle does not
-/// define (such as un-adopting an idea) is an invalid invocation.
+/// Resolution reuses the strict read pipeline, so a malformed artifact
+/// refuses with a typed error naming the file. A transition the
+/// collection's lifecycle does not define (such as un-adopting an idea) is
+/// an invalid invocation.
 pub fn transition(
     root: &Path,
     collection: &Collection,
@@ -63,39 +52,7 @@ pub fn transition(
 ) -> Result<Transition, Error> {
     let artifacts = read::scan(root, collection)?;
     let artifact = read::resolve(&artifacts, target, display)?;
-    perform(root, collection, artifact, to, &mut RealFs)
-}
-
-/// The two mutating primitives a transition performs, separated so tests can
-/// inject failures at each returned-error boundary — including the rollback
-/// path, which no external fault can reach deterministically.
-pub(crate) trait TransitionFs {
-    /// Atomically replace `dest` with `content` via an exclusive temporary
-    /// file beside it. Clobbering is intended: `dest` is the artifact being
-    /// rewritten in place.
-    fn replace(&mut self, dest: &Path, content: &str) -> io::Result<()>;
-    /// Atomically rename `src` to `dst`.
-    fn rename(&mut self, src: &Path, dst: &Path) -> io::Result<()>;
-}
-
-pub(crate) struct RealFs;
-
-impl TransitionFs for RealFs {
-    fn replace(&mut self, dest: &Path, content: &str) -> io::Result<()> {
-        let dir = dest.parent().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "artifact path has no parent")
-        })?;
-        let mut tmp = tempfile::Builder::new()
-            .prefix(".strata.artifact.tmp")
-            .tempfile_in(dir)?;
-        tmp.write_all(content.as_bytes())?;
-        tmp.persist(dest).map_err(|err| err.error)?;
-        Ok(())
-    }
-
-    fn rename(&mut self, src: &Path, dst: &Path) -> io::Result<()> {
-        fs::rename(src, dst)
-    }
+    perform(root, collection, artifact, to)
 }
 
 /// Perform the transition of one resolved artifact.
@@ -104,15 +61,14 @@ pub(crate) fn perform(
     collection: &Collection,
     artifact: &Artifact,
     to: Status,
-    fs_ops: &mut dyn TransitionFs,
 ) -> Result<Transition, Error> {
     let from = artifact.summary.status;
     let reference = artifact.summary.reference();
-    let src_rel = &artifact.summary.path;
+    let path_rel = &artifact.summary.path;
     if from == to {
         return Err(Error::InvalidInvocation {
             message: format!(
-                "`{reference}` is already {from} (at `{src_rel}`); no transition needed"
+                "`{reference}` is already {from} (at `{path_rel}`); no transition needed"
             ),
         });
     }
@@ -128,80 +84,44 @@ pub(crate) fn perform(
         });
     }
 
-    let filename = src_rel
-        .rsplit('/')
-        .next()
-        .expect("summary paths always contain a filename");
-    let dst_dir_rel = collection.dir_of(to);
-    let dst_rel = format!("{dst_dir_rel}/{filename}");
-    let src = root.join(src_rel);
-    let dst = root.join(&dst_rel);
-
+    let path = root.join(path_rel);
     let rewritten =
         rewrite_status(&artifact.content, from, to).map_err(|reason| Error::MalformedArtifact {
-            path: src.clone(),
+            path: path.clone(),
             reason,
         })?;
 
-    match fs::symlink_metadata(&dst) {
-        Ok(_) => {
-            return Err(Error::ArtifactConflict {
-                path: dst,
-                reason: "an artifact already occupies the destination path".into(),
-            });
-        }
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-        Err(source) => {
-            return Err(Error::Filesystem {
-                operation: "inspect transition destination".into(),
-                path: dst,
-                source,
-            });
-        }
-    }
-
-    // Git does not round-trip empty directories, so a cloned repository may
-    // lack the destination; materialize it before mutating anything.
-    crate::repo::ensure_dir(root, dst_dir_rel, &mut Vec::new())?;
-
-    // Step 1, the commit point: the artifact's own front matter now records
-    // the transition.
-    fs_ops
-        .replace(&src, &rewritten)
-        .map_err(|source| Error::Filesystem {
-            operation: "rewrite front-matter status".into(),
-            path: src.clone(),
-            source,
-        })?;
-
-    // Step 2, mechanical filing: placement follows status.
-    if let Err(rename_error) = fs_ops.rename(&src, &dst) {
-        return Err(match fs_ops.replace(&src, &artifact.content) {
-            Ok(()) => Error::Filesystem {
-                operation: format!(
-                    "file the transition into `{dst_dir_rel}` (the status \
-                     rewrite was rolled back; `{reference}` is unchanged)"
-                ),
-                path: src,
-                source: rename_error,
-            },
-            Err(rollback_error) => Error::TransitionInterrupted {
-                path: src,
-                status: to.name(),
-                placement: collection.dir_of(from),
-                destination: dst_rel,
-                rename_error,
-                rollback_error,
-            },
-        });
-    }
+    replace(&path, &rewritten).map_err(|source| Error::Filesystem {
+        operation: "rewrite front-matter status".into(),
+        path,
+        source,
+    })?;
 
     Ok(Transition {
         reference,
         from,
         to,
-        to_path: dst_rel,
+        path: path_rel.clone(),
     })
+}
+
+/// Atomically replace `dest` with `content` via an exclusive temporary
+/// file beside it. Clobbering is intended: `dest` is the artifact being
+/// rewritten in place. A failure at any point leaves `dest` untouched.
+fn replace(dest: &Path, content: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let dir = dest.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "artifact path has no parent",
+        )
+    })?;
+    let mut tmp = tempfile::Builder::new()
+        .prefix(".strata.artifact.tmp")
+        .tempfile_in(dir)?;
+    tmp.write_all(content.as_bytes())?;
+    tmp.persist(dest).map_err(|err| err.error)?;
+    Ok(())
 }
 
 /// Rewrite exactly the front-matter `status` value from `from` to `to`,
@@ -276,7 +196,8 @@ fn front_matter_region(content: &str) -> Option<(usize, usize)> {
 mod tests {
     use super::*;
     use crate::repo;
-    use crate::repo::{DRAGONS_CLOSED_DIR, DRAGONS_OPEN_DIR};
+    use crate::repo::{DRAGONS_DIR, IDEAS_DIR};
+    use std::fs;
 
     fn temp_repo() -> tempfile::TempDir {
         let tmp = tempfile::tempdir().expect("create temporary directory");
@@ -291,44 +212,8 @@ mod tests {
     }
 
     fn seed(root: &Path, dir: &str, name: &str, content: &str) {
+        fs::create_dir_all(root.join(dir)).unwrap();
         fs::write(root.join(dir).join(name), content).unwrap();
-    }
-
-    fn scan_one(root: &Path) -> Artifact {
-        let artifacts = read::scan(root, &read::DRAGON).unwrap();
-        assert_eq!(artifacts.len(), 1);
-        artifacts.into_iter().next().unwrap()
-    }
-
-    /// Injectable failures: `fail_rename` fails every rename; replaces
-    /// succeed until `fail_replace_after` have run, then fail.
-    struct FailingFs {
-        fail_rename: bool,
-        fail_replace_after: usize,
-        replaces: usize,
-    }
-
-    impl TransitionFs for FailingFs {
-        fn replace(&mut self, dest: &Path, content: &str) -> io::Result<()> {
-            self.replaces += 1;
-            if self.replaces > self.fail_replace_after {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "injected replace failure",
-                ));
-            }
-            RealFs.replace(dest, content)
-        }
-
-        fn rename(&mut self, src: &Path, dst: &Path) -> io::Result<()> {
-            if self.fail_rename {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "injected rename failure",
-                ));
-            }
-            RealFs.rename(src, dst)
-        }
     }
 
     #[test]
@@ -374,12 +259,40 @@ mod tests {
     }
 
     #[test]
-    fn undefined_transitions_are_invalid_invocations_naming_the_lifecycle() {
+    fn transition_rewrites_in_place_without_moving_the_file() {
         let tmp = temp_repo();
-        fs::create_dir_all(tmp.path().join(crate::repo::IDEAS_ADOPTED_DIR)).unwrap();
         seed(
             tmp.path(),
-            crate::repo::IDEAS_ADOPTED_DIR,
+            DRAGONS_DIR,
+            "0001-rich-dragon.md",
+            &rich_dragon("open"),
+        );
+
+        let done = transition(
+            tmp.path(),
+            &read::DRAGON,
+            Selector::Sequence(1),
+            "dragon:1",
+            Status::Closed,
+        )
+        .unwrap();
+
+        assert_eq!(done.path, format!("{DRAGONS_DIR}/0001-rich-dragon.md"));
+        let path = tmp.path().join(DRAGONS_DIR).join("0001-rich-dragon.md");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            rich_dragon("closed"),
+            "only the status value may change, and the file must not move"
+        );
+        assert!(crate::doctor::check(tmp.path()).unwrap().healthy());
+    }
+
+    #[test]
+    fn undefined_transitions_are_invalid_invocations_naming_the_lifecycle() {
+        let tmp = temp_repo();
+        seed(
+            tmp.path(),
+            IDEAS_DIR,
             "0001-settled.md",
             "---\nid: idea-settled\nsequence: 1\nkind: idea\nstatus: adopted\ncreated: 2026-07-20\n---\n\n# Settled\n",
         );
@@ -399,132 +312,42 @@ mod tests {
             message.contains("parked -> adopted, parked -> rejected"),
             "the refusal must name the legal lifecycle: {message}"
         );
-        assert!(
-            tmp.path()
-                .join(crate::repo::IDEAS_ADOPTED_DIR)
-                .join("0001-settled.md")
-                .is_file(),
-            "nothing may move"
+        assert_eq!(
+            fs::read_to_string(tmp.path().join(IDEAS_DIR).join("0001-settled.md")).unwrap(),
+            "---\nid: idea-settled\nsequence: 1\nkind: idea\nstatus: adopted\ncreated: 2026-07-20\n---\n\n# Settled\n",
+            "nothing may change"
         );
     }
 
+    #[cfg(unix)]
     #[test]
-    fn failed_rename_rolls_back_to_the_original_bytes() {
+    fn failed_write_leaves_the_original_bytes_untouched() {
+        use std::os::unix::fs::PermissionsExt;
+
         let tmp = temp_repo();
         let original = rich_dragon("open");
-        seed(
-            tmp.path(),
-            DRAGONS_OPEN_DIR,
-            "0001-rich-dragon.md",
-            &original,
-        );
-        let artifact = scan_one(tmp.path());
-        let mut fs_ops = FailingFs {
-            fail_rename: true,
-            fail_replace_after: usize::MAX,
-            replaces: 0,
-        };
+        seed(tmp.path(), DRAGONS_DIR, "0001-rich-dragon.md", &original);
+        let dir = tmp.path().join(DRAGONS_DIR);
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
 
-        let err = perform(
-            tmp.path(),
-            &read::DRAGON,
-            &artifact,
-            Status::Closed,
-            &mut fs_ops,
-        )
-        .unwrap_err();
-
-        assert!(matches!(err, Error::Filesystem { .. }), "{err:?}");
-        assert!(
-            err.to_string().contains("rolled back"),
-            "the error must state the rollback: {err}"
-        );
-        let src = tmp
-            .path()
-            .join(DRAGONS_OPEN_DIR)
-            .join("0001-rich-dragon.md");
-        assert_eq!(
-            fs::read_to_string(&src).unwrap(),
-            original,
-            "rollback must restore the original bytes"
-        );
-        assert!(
-            !tmp.path()
-                .join(DRAGONS_CLOSED_DIR)
-                .join("0001-rich-dragon.md")
-                .exists(),
-            "nothing may reach the destination"
-        );
-        assert!(crate::doctor::check(tmp.path()).unwrap().healthy());
-    }
-
-    #[test]
-    fn doubly_failed_rollback_reports_the_interrupted_state_doctor_diagnoses() {
-        let tmp = temp_repo();
-        seed(
-            tmp.path(),
-            DRAGONS_OPEN_DIR,
-            "0001-rich-dragon.md",
-            &rich_dragon("open"),
-        );
-        let artifact = scan_one(tmp.path());
-        let mut fs_ops = FailingFs {
-            fail_rename: true,
-            fail_replace_after: 1,
-            replaces: 0,
-        };
-
-        let err = perform(
-            tmp.path(),
-            &read::DRAGON,
-            &artifact,
-            Status::Closed,
-            &mut fs_ops,
-        )
-        .unwrap_err();
-
-        let rendered = err.render();
-        assert!(
-            matches!(err, Error::TransitionInterrupted { .. }),
-            "{err:?}"
-        );
-        assert!(
-            rendered.contains("status: closed")
-                && rendered.contains(DRAGONS_OPEN_DIR)
-                && rendered.contains("doctor"),
-            "the error must name the mismatch state and point at doctor: {rendered}"
-        );
-
-        // The leaked state is exactly the crash-window intermediate:
-        // committed status, stale placement — one valid artifact, one path.
-        let src = tmp
-            .path()
-            .join(DRAGONS_OPEN_DIR)
-            .join("0001-rich-dragon.md");
-        assert_eq!(fs::read_to_string(&src).unwrap(), rich_dragon("closed"));
-
-        let report = crate::doctor::check(tmp.path()).unwrap();
-        assert_eq!(report.findings.len(), 1, "{:?}", report.findings);
-        assert_eq!(report.findings[0].problem, "malformed-artifact");
-        assert!(
-            report.findings[0].detail.contains("lifecycle mismatch"),
-            "{}",
-            report.findings[0].detail
-        );
-
-        // A re-run refuses the mismatched artifact instead of repairing it.
-        let rerun = transition(
+        let result = transition(
             tmp.path(),
             &read::DRAGON,
             Selector::Sequence(1),
             "dragon:1",
             Status::Closed,
-        )
-        .unwrap_err();
-        assert!(
-            matches!(rerun, Error::MalformedArtifact { .. }),
-            "{rerun:?}"
         );
-        assert!(rerun.to_string().contains("lifecycle mismatch"), "{rerun}");
+
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            matches!(result, Err(Error::Filesystem { .. })),
+            "{result:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("0001-rich-dragon.md")).unwrap(),
+            original,
+            "a failed transition must leave the original bytes"
+        );
+        assert!(crate::doctor::check(tmp.path()).unwrap().healthy());
     }
 }

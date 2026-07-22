@@ -1,12 +1,13 @@
 //! Integration tests for `strata close` and `strata reopen` through the
-//! compiled binary, pinning the failure-class contract of decision 8.
+//! compiled binary, pinning the failure-class contract of decision 8 as
+//! amended by decision 11: a transition is one in-place safe write, and
+//! the file never moves.
 
 use std::fs;
 use std::path::Path;
 use std::process::Output;
 
-const OPEN_DIR: &str = "archaeology/dragons/open";
-const CLOSED_DIR: &str = "archaeology/dragons/closed";
+const DRAGONS_DIR: &str = "archaeology/dragons";
 
 fn strata_in(dir: &Path, args: &[&str]) -> Output {
     std::process::Command::new(env!("CARGO_BIN_EXE_strata"))
@@ -51,10 +52,10 @@ fn assert_doctor_healthy(root: &Path) {
 }
 
 #[test]
-fn close_moves_the_artifact_and_rewrites_only_the_status() {
+fn close_rewrites_only_the_status_and_never_moves_the_file() {
     let tmp = init_repo();
     fs::write(
-        tmp.path().join(OPEN_DIR).join("0001-rich-dragon.md"),
+        tmp.path().join(DRAGONS_DIR).join("0001-rich-dragon.md"),
         rich_dragon("open"),
     )
     .unwrap();
@@ -67,23 +68,17 @@ fn close_moves_the_artifact_and_rewrites_only_the_status() {
         "dragon:1",
         "open",
         "closed",
-        "archaeology/dragons/closed/0001-rich-dragon.md",
+        "archaeology/dragons/0001-rich-dragon.md",
     ] {
         assert!(
             line.contains(needle),
             "output must name `{needle}`:\n{line}"
         );
     }
-    assert!(
-        !tmp.path()
-            .join(OPEN_DIR)
-            .join("0001-rich-dragon.md")
-            .exists()
-    );
     assert_eq!(
-        fs::read_to_string(tmp.path().join(CLOSED_DIR).join("0001-rich-dragon.md")).unwrap(),
+        fs::read_to_string(tmp.path().join(DRAGONS_DIR).join("0001-rich-dragon.md")).unwrap(),
         rich_dragon("closed"),
-        "every byte except the status value must be preserved"
+        "every byte except the status value must be preserved, in place"
     );
     assert_doctor_healthy(tmp.path());
 }
@@ -93,7 +88,7 @@ fn reopen_round_trips_to_the_original_bytes() {
     let tmp = init_repo();
     let original = rich_dragon("open");
     fs::write(
-        tmp.path().join(OPEN_DIR).join("0001-rich-dragon.md"),
+        tmp.path().join(DRAGONS_DIR).join("0001-rich-dragon.md"),
         &original,
     )
     .unwrap();
@@ -112,7 +107,7 @@ fn reopen_round_trips_to_the_original_bytes() {
         stdout(&out)
     );
     assert_eq!(
-        fs::read_to_string(tmp.path().join(OPEN_DIR).join("0001-rich-dragon.md")).unwrap(),
+        fs::read_to_string(tmp.path().join(DRAGONS_DIR).join("0001-rich-dragon.md")).unwrap(),
         original,
         "a close/reopen round trip must be byte-identical"
     );
@@ -120,12 +115,10 @@ fn reopen_round_trips_to_the_original_bytes() {
 }
 
 #[test]
-fn close_resolves_stable_ids_and_materializes_the_destination() {
+fn close_resolves_stable_ids() {
     let tmp = init_repo();
-    // Simulate the Git round-trip: only the open artifact survives a clone.
-    fs::remove_dir(tmp.path().join(CLOSED_DIR)).unwrap();
     fs::write(
-        tmp.path().join(OPEN_DIR).join("0001-rich-dragon.md"),
+        tmp.path().join(DRAGONS_DIR).join("0001-rich-dragon.md"),
         rich_dragon("open"),
     )
     .unwrap();
@@ -133,12 +126,9 @@ fn close_resolves_stable_ids_and_materializes_the_destination() {
     let out = strata_in(tmp.path(), &["close", "drg-rich"]);
 
     assert!(out.status.success(), "{}", stderr(&out));
-    assert!(
-        tmp.path()
-            .join(CLOSED_DIR)
-            .join("0001-rich-dragon.md")
-            .is_file(),
-        "the destination directory must be materialized on demand"
+    assert_eq!(
+        fs::read_to_string(tmp.path().join(DRAGONS_DIR).join("0001-rich-dragon.md")).unwrap(),
+        rich_dragon("closed")
     );
     assert_doctor_healthy(tmp.path());
 }
@@ -147,7 +137,7 @@ fn close_resolves_stable_ids_and_materializes_the_destination() {
 fn closing_an_already_closed_artifact_is_an_invalid_invocation() {
     let tmp = init_repo();
     fs::write(
-        tmp.path().join(CLOSED_DIR).join("0001-rich-dragon.md"),
+        tmp.path().join(DRAGONS_DIR).join("0001-rich-dragon.md"),
         rich_dragon("closed"),
     )
     .unwrap();
@@ -159,7 +149,7 @@ fn closing_an_already_closed_artifact_is_an_invalid_invocation() {
     assert!(err.starts_with("error[invalid-invocation]:"), "{err}");
     assert!(err.contains("already closed"), "{err}");
     assert_eq!(
-        fs::read_to_string(tmp.path().join(CLOSED_DIR).join("0001-rich-dragon.md")).unwrap(),
+        fs::read_to_string(tmp.path().join(DRAGONS_DIR).join("0001-rich-dragon.md")).unwrap(),
         rich_dragon("closed")
     );
 }
@@ -178,13 +168,12 @@ fn unknown_reference_is_artifact_not_found() {
 
 #[test]
 fn duplicate_sequence_is_an_ambiguous_reference() {
+    // The branch-merge shape of dragon 1: two branches allocated the same
+    // sequence, and a merge put both files in the collection directory.
     let tmp = init_repo();
-    for (dir, status, name) in [
-        (OPEN_DIR, "open", "0001-a.md"),
-        (CLOSED_DIR, "closed", "0001-b.md"),
-    ] {
+    for (status, name) in [("open", "0001-a.md"), ("closed", "0001-b.md")] {
         fs::write(
-            tmp.path().join(dir).join(name),
+            tmp.path().join(DRAGONS_DIR).join(name),
             format!(
                 "---\nid: id-{name}\nsequence: 1\nkind: dragon\nstatus: {status}\ncreated: 2026-07-20\n---\n\n# T\n"
             ),
@@ -202,115 +191,20 @@ fn duplicate_sequence_is_an_ambiguous_reference() {
     );
 }
 
-#[test]
-fn destination_collision_is_refused_with_both_files_intact() {
-    // The branch-merge shape of dragon 1: two branches allocated the same
-    // sequence, so open/ and closed/ each hold a valid artifact with the
-    // same filename. Resolution by stable id is unambiguous; the transition
-    // must still refuse to clobber the closed twin.
-    let tmp = init_repo();
-    let open_content = "---\nid: id-open-twin\nsequence: 1\nkind: dragon\nstatus: open\ncreated: 2026-07-20\n---\n\n# Twin\n";
-    let closed_content = "---\nid: id-closed-twin\nsequence: 1\nkind: dragon\nstatus: closed\ncreated: 2026-07-20\n---\n\n# Twin\n";
-    fs::write(tmp.path().join(OPEN_DIR).join("0001-twin.md"), open_content).unwrap();
-    fs::write(
-        tmp.path().join(CLOSED_DIR).join("0001-twin.md"),
-        closed_content,
-    )
-    .unwrap();
-
-    let out = strata_in(tmp.path(), &["close", "id-open-twin"]);
-
-    assert_eq!(out.status.code(), Some(4), "{}", stderr(&out));
-    assert!(
-        stderr(&out).starts_with("error[artifact-conflict]:"),
-        "{}",
-        stderr(&out)
-    );
-    assert_eq!(
-        fs::read_to_string(tmp.path().join(OPEN_DIR).join("0001-twin.md")).unwrap(),
-        open_content,
-        "the source must be untouched"
-    );
-    assert_eq!(
-        fs::read_to_string(tmp.path().join(CLOSED_DIR).join("0001-twin.md")).unwrap(),
-        closed_content,
-        "the destination occupant must be untouched"
-    );
-}
-
-#[test]
-fn mismatched_artifact_refuses_transition_and_directs_to_doctor() {
-    let tmp = init_repo();
-    // The crash-window intermediate state, constructed directly on disk:
-    // status committed to `closed`, file still filed under open/.
-    fs::write(
-        tmp.path().join(OPEN_DIR).join("0001-rich-dragon.md"),
-        rich_dragon("closed"),
-    )
-    .unwrap();
-
-    let out = strata_in(tmp.path(), &["close", "dragon:1"]);
-
-    assert_eq!(out.status.code(), Some(5), "{}", stderr(&out));
-    let err = stderr(&out);
-    assert!(err.starts_with("error[malformed-artifact]:"), "{err}");
-    assert!(err.contains("lifecycle mismatch"), "{err}");
-    assert!(err.contains("doctor"), "{err}");
-
-    // Doctor diagnoses precisely the same state.
-    let doctor = strata_in(tmp.path(), &["doctor"]);
-    assert_eq!(doctor.status.code(), Some(9));
-    let report = stdout(&doctor);
-    assert!(report.contains("lifecycle mismatch"), "{report}");
-    assert!(report.contains("0001-rich-dragon.md"), "{report}");
-}
-
 #[cfg(unix)]
 #[test]
-fn unwritable_source_directory_leaves_the_artifact_untouched() {
+fn failed_write_leaves_the_artifact_untouched() {
     use std::os::unix::fs::PermissionsExt;
 
     let tmp = init_repo();
     let original = rich_dragon("open");
     fs::write(
-        tmp.path().join(OPEN_DIR).join("0001-rich-dragon.md"),
-        &original,
-    )
-    .unwrap();
-    fs::set_permissions(tmp.path().join(OPEN_DIR), fs::Permissions::from_mode(0o555)).unwrap();
-
-    let out = strata_in(tmp.path(), &["close", "dragon:1"]);
-
-    fs::set_permissions(tmp.path().join(OPEN_DIR), fs::Permissions::from_mode(0o755)).unwrap();
-    assert_eq!(out.status.code(), Some(6), "{}", stderr(&out));
-    assert_eq!(
-        fs::read_to_string(tmp.path().join(OPEN_DIR).join("0001-rich-dragon.md")).unwrap(),
-        original,
-        "a failed status rewrite must leave the artifact unchanged"
-    );
-    assert!(
-        !tmp.path()
-            .join(CLOSED_DIR)
-            .join("0001-rich-dragon.md")
-            .exists()
-    );
-    assert_doctor_healthy(tmp.path());
-}
-
-#[cfg(unix)]
-#[test]
-fn unwritable_destination_rolls_the_status_rewrite_back() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let tmp = init_repo();
-    let original = rich_dragon("open");
-    fs::write(
-        tmp.path().join(OPEN_DIR).join("0001-rich-dragon.md"),
+        tmp.path().join(DRAGONS_DIR).join("0001-rich-dragon.md"),
         &original,
     )
     .unwrap();
     fs::set_permissions(
-        tmp.path().join(CLOSED_DIR),
+        tmp.path().join(DRAGONS_DIR),
         fs::Permissions::from_mode(0o555),
     )
     .unwrap();
@@ -318,26 +212,15 @@ fn unwritable_destination_rolls_the_status_rewrite_back() {
     let out = strata_in(tmp.path(), &["close", "dragon:1"]);
 
     fs::set_permissions(
-        tmp.path().join(CLOSED_DIR),
+        tmp.path().join(DRAGONS_DIR),
         fs::Permissions::from_mode(0o755),
     )
     .unwrap();
     assert_eq!(out.status.code(), Some(6), "{}", stderr(&out));
-    assert!(
-        stderr(&out).contains("rolled back"),
-        "the error must state the rollback:\n{}",
-        stderr(&out)
-    );
     assert_eq!(
-        fs::read_to_string(tmp.path().join(OPEN_DIR).join("0001-rich-dragon.md")).unwrap(),
+        fs::read_to_string(tmp.path().join(DRAGONS_DIR).join("0001-rich-dragon.md")).unwrap(),
         original,
-        "the rollback must restore the original bytes"
-    );
-    assert!(
-        !tmp.path()
-            .join(CLOSED_DIR)
-            .join("0001-rich-dragon.md")
-            .exists()
+        "a failed status rewrite must leave the artifact unchanged"
     );
     assert_doctor_healthy(tmp.path());
 }

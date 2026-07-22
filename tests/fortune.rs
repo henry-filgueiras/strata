@@ -9,8 +9,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Output;
 
-const OPEN_DIR: &str = "archaeology/dragons/open";
-const CLOSED_DIR: &str = "archaeology/dragons/closed";
+const DRAGONS_DIR: &str = "archaeology/dragons";
 
 fn strata_in(dir: &Path, args: &[&str]) -> Output {
     std::process::Command::new(env!("CARGO_BIN_EXE_strata"))
@@ -66,7 +65,7 @@ fn marker_only_repository_prints_the_friendly_message() {
 fn closed_dragons_alone_are_never_recalled() {
     let tmp = init_repo();
     fs::write(
-        tmp.path().join(CLOSED_DIR).join("0001-slain.md"),
+        tmp.path().join(DRAGONS_DIR).join("0001-slain.md"),
         dragon("id-1", 1, "closed", "Slain risk", "Long resolved."),
     )
     .unwrap();
@@ -81,7 +80,7 @@ fn closed_dragons_alone_are_never_recalled() {
 fn output_names_reference_title_age_path_and_excerpt() {
     let tmp = init_repo();
     fs::write(
-        tmp.path().join(OPEN_DIR).join("0001-lone-risk.md"),
+        tmp.path().join(DRAGONS_DIR).join("0001-lone-risk.md"),
         dragon(
             "id-1",
             1,
@@ -100,7 +99,7 @@ fn output_names_reference_title_age_path_and_excerpt() {
         "dragon:1",
         "Lone risk",
         "open",
-        "archaeology/dragons/open/0001-lone-risk.md",
+        "archaeology/dragons/0001-lone-risk.md",
         "  The first prose line of the risk.",
     ] {
         assert!(text.contains(needle), "missing `{needle}`:\n{text}");
@@ -111,7 +110,7 @@ fn output_names_reference_title_age_path_and_excerpt() {
 fn unparseable_created_stamp_degrades_to_age_unknown() {
     let tmp = init_repo();
     fs::write(
-        tmp.path().join(OPEN_DIR).join("0001-undated.md"),
+        tmp.path().join(DRAGONS_DIR).join("0001-undated.md"),
         "---\nid: id-1\nsequence: 1\nkind: dragon\nstatus: open\ncreated: sometime\n---\n\n# Undated risk\n",
     )
     .unwrap();
@@ -130,7 +129,7 @@ fn every_recall_names_an_open_dragon_and_never_a_closed_one() {
         let sequence = i as u32 + 1;
         fs::write(
             tmp.path()
-                .join(OPEN_DIR)
+                .join(DRAGONS_DIR)
                 .join(format!("000{sequence}-open-{sequence}.md")),
             dragon(
                 &format!("id-open-{sequence}"),
@@ -143,7 +142,7 @@ fn every_recall_names_an_open_dragon_and_never_a_closed_one() {
         .unwrap();
     }
     fs::write(
-        tmp.path().join(CLOSED_DIR).join("0004-closed.md"),
+        tmp.path().join(DRAGONS_DIR).join("0004-closed.md"),
         dragon("id-closed", 4, "closed", "Closed risk", "Prose."),
     )
     .unwrap();
@@ -179,7 +178,7 @@ fn a_lone_parked_idea_is_recalled_with_the_full_output_shape() {
     let tmp = init_repo();
     seed_idea(
         tmp.path(),
-        "archaeology/ideas/parked",
+        "archaeology/ideas",
         "0001-lone-idea.md",
         &idea(
             "id-1",
@@ -197,7 +196,7 @@ fn a_lone_parked_idea_is_recalled_with_the_full_output_shape() {
     for needle in [
         "idea:1",
         "Lone idea",
-        "archaeology/ideas/parked/0001-lone-idea.md",
+        "archaeology/ideas/0001-lone-idea.md",
         "  The proposal's first line.",
     ] {
         assert!(text.contains(needle), "missing `{needle}`:\n{text}");
@@ -208,24 +207,24 @@ fn a_lone_parked_idea_is_recalled_with_the_full_output_shape() {
 fn recalls_span_both_collections_and_never_terminal_states() {
     let tmp = init_repo();
     fs::write(
-        tmp.path().join(OPEN_DIR).join("0001-open.md"),
+        tmp.path().join(DRAGONS_DIR).join("0001-open.md"),
         dragon("id-open", 1, "open", "Open risk", "Prose."),
     )
     .unwrap();
     fs::write(
-        tmp.path().join(CLOSED_DIR).join("0002-closed.md"),
+        tmp.path().join(DRAGONS_DIR).join("0002-closed.md"),
         dragon("id-closed", 2, "closed", "Closed risk", "Prose."),
     )
     .unwrap();
     seed_idea(
         tmp.path(),
-        "archaeology/ideas/parked",
+        "archaeology/ideas",
         "0001-parked.md",
         &idea("id-parked", 1, "parked", "Parked idea", "Prose."),
     );
     seed_idea(
         tmp.path(),
-        "archaeology/ideas/adopted",
+        "archaeology/ideas",
         "0002-adopted.md",
         &idea("id-adopted", 2, "adopted", "Adopted idea", "Prose."),
     );
@@ -259,7 +258,7 @@ fn the_empty_state_names_both_collections() {
     let tmp = init_repo();
     seed_idea(
         tmp.path(),
-        "archaeology/ideas/adopted",
+        "archaeology/ideas",
         "0001-adopted.md",
         &idea("id-adopted", 1, "adopted", "Adopted idea", "Prose."),
     );
@@ -276,7 +275,7 @@ fn the_empty_state_names_both_collections() {
 fn fortune_never_mutates_the_repository() {
     let tmp = init_repo();
     let content = dragon("id-1", 1, "open", "Stable risk", "Prose.");
-    let path = tmp.path().join(OPEN_DIR).join("0001-stable-risk.md");
+    let path = tmp.path().join(DRAGONS_DIR).join("0001-stable-risk.md");
     fs::write(&path, &content).unwrap();
 
     for _ in 0..3 {

@@ -8,8 +8,8 @@
 //! # Validation boundary
 //!
 //! Reading validates exactly what is needed to trust a managed file as an
-//! artifact: front matter shape, required fields, filename agreement, and
-//! lifecycle placement. A malformed managed file is a typed error naming the
+//! artifact: front matter shape, required fields, and filename agreement. A
+//! malformed managed file is a typed error naming the
 //! path — never silently skipped — but this is not `doctor`: scanning stops
 //! at the first problem instead of producing a repository-wide report.
 //!
@@ -28,14 +28,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::artifact::MAX_SEQUENCE;
 use crate::error::Error;
-use crate::repo::{
-    DRAGONS_CLOSED_DIR, DRAGONS_OPEN_DIR, IDEAS_ADOPTED_DIR, IDEAS_PARKED_DIR, IDEAS_REJECTED_DIR,
-};
+use crate::repo::{DRAGONS_DIR, IDEAS_DIR};
 
-/// Lifecycle state of a managed artifact, agreeing with its placement:
-/// files under `dragons/open` are `open`, files under `ideas/parked` are
-/// `parked`, and so on. One vocabulary spans every collection; which states
-/// a given collection admits is [`Collection`] data.
+/// Lifecycle state of a managed artifact, carried only in front matter per
+/// decision 11: placement is flat, so the directory says nothing about
+/// state. One vocabulary spans every collection; which states a given
+/// collection admits is [`Collection`] data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
@@ -60,7 +58,7 @@ impl Status {
 }
 
 /// One managed collection, described as plain data: its kind name, its
-/// lifecycle states with their directories, and its legal transitions.
+/// directory, its lifecycle states, and its legal transitions.
 ///
 /// This is a value, not a framework: the interpreting machinery (scan,
 /// parse, transition, validate) is ordinary code taking one of the two
@@ -70,9 +68,12 @@ impl Status {
 pub struct Collection {
     /// Canonical singular kind name, as written in front matter.
     pub kind: &'static str,
-    /// Lifecycle states in scan order: `(status, root-relative directory)`.
-    /// The first entry is the home state new artifacts are created in.
-    pub states: &'static [(Status, &'static str)],
+    /// The one root-relative directory holding every artifact of the
+    /// collection, regardless of lifecycle state (decision 11).
+    pub dir: &'static str,
+    /// Admitted lifecycle states; the first is the home state new
+    /// artifacts are created in.
+    pub states: &'static [Status],
     /// Legal lifecycle transitions as `(from, to)` pairs.
     pub transitions: &'static [(Status, Status)],
 }
@@ -80,10 +81,8 @@ pub struct Collection {
 /// The dragon collection: unresolved technical risks, `open <-> closed`.
 pub static DRAGON: Collection = Collection {
     kind: "dragon",
-    states: &[
-        (Status::Open, DRAGONS_OPEN_DIR),
-        (Status::Closed, DRAGONS_CLOSED_DIR),
-    ],
+    dir: DRAGONS_DIR,
+    states: &[Status::Open, Status::Closed],
     transitions: &[
         (Status::Open, Status::Closed),
         (Status::Closed, Status::Open),
@@ -94,11 +93,8 @@ pub static DRAGON: Collection = Collection {
 /// Terminal states are permanent; there is no reopen analog.
 pub static IDEA: Collection = Collection {
     kind: "idea",
-    states: &[
-        (Status::Parked, IDEAS_PARKED_DIR),
-        (Status::Adopted, IDEAS_ADOPTED_DIR),
-        (Status::Rejected, IDEAS_REJECTED_DIR),
-    ],
+    dir: IDEAS_DIR,
+    states: &[Status::Parked, Status::Adopted, Status::Rejected],
     transitions: &[
         (Status::Parked, Status::Adopted),
         (Status::Parked, Status::Rejected),
@@ -106,25 +102,11 @@ pub static IDEA: Collection = Collection {
 };
 
 impl Collection {
-    /// The lifecycle directory holding artifacts in `status`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `status` is not a state of this collection; callers only
-    /// obtain statuses by parsing this collection's artifacts.
-    pub fn dir_of(&self, status: Status) -> &'static str {
-        self.states
-            .iter()
-            .find(|(s, _)| *s == status)
-            .map(|(_, dir)| *dir)
-            .unwrap_or_else(|| panic!("{} has no `{status}` state", self.kind))
-    }
-
     /// Parse a front-matter status string against this collection's states.
     pub fn parse_status(&self, name: &str) -> Option<Status> {
         self.states
             .iter()
-            .map(|(status, _)| *status)
+            .copied()
             .find(|status| status.name() == name)
     }
 
@@ -135,7 +117,7 @@ impl Collection {
 
     /// Human list of valid status names, for error messages.
     fn status_names(&self) -> String {
-        let names: Vec<&str> = self.states.iter().map(|(s, _)| s.name()).collect();
+        let names: Vec<&str> = self.states.iter().map(|s| s.name()).collect();
         names.join("` or `")
     }
 
@@ -171,7 +153,8 @@ pub struct Summary {
     pub sequence: u32,
     /// Artifact kind: the collection's singular name, e.g. `dragon`.
     pub kind: String,
-    /// Lifecycle state, agreeing with repository placement.
+    /// Lifecycle state, from front matter (the sole authority per
+    /// decision 11).
     pub status: Status,
     /// Title from the artifact's level-one Markdown heading.
     pub title: String,
@@ -246,17 +229,19 @@ struct FrontMatter {
 /// path. Dot-prefixed entries are not artifacts and are ignored.
 pub fn scan(root: &Path, collection: &Collection) -> Result<Vec<Artifact>, Error> {
     let mut artifacts = Vec::new();
-    for (status, dir_rel) in collection.states {
-        let dir = root.join(dir_rel);
-        for name in managed_entries(&dir)? {
-            artifacts.push(parse_artifact(
-                &dir.join(&name),
-                dir_rel,
-                &name,
-                collection,
-                *status,
-            )?);
+    let dir = root.join(collection.dir);
+    for name in managed_entries(&dir)? {
+        let path = dir.join(&name);
+        if path.is_dir() {
+            return Err(Error::ArtifactConflict {
+                path,
+                reason: "a directory sits inside a managed collection \
+                         directory; placement is flat (decision 11), so \
+                         artifacts file directly in the collection directory"
+                    .into(),
+            });
         }
+        artifacts.push(parse_artifact(&path, collection.dir, &name, collection)?);
     }
     artifacts.sort_by(|a, b| {
         (a.summary.sequence, &a.summary.path).cmp(&(b.summary.sequence, &b.summary.path))
@@ -349,15 +334,14 @@ fn managed_entries(dir: &Path) -> Result<Vec<String>, Error> {
 }
 
 /// Parse one managed artifact file into the read model, validating filename
-/// agreement, required front matter, lifecycle placement, and the title
-/// heading. `doctor` reuses this per-file pipeline so validation semantics
-/// cannot drift between scanning and diagnosis.
+/// agreement, required front matter, and the title heading. `doctor`
+/// reuses this per-file pipeline so validation semantics cannot drift
+/// between scanning and diagnosis.
 pub(crate) fn parse_artifact(
     path: &Path,
     dir_rel: &str,
     file_name: &str,
     collection: &Collection,
-    placement: Status,
 ) -> Result<Artifact, Error> {
     let kind = collection.kind;
     let malformed = |reason: String| Error::MalformedArtifact {
@@ -414,12 +398,6 @@ pub(crate) fn parse_artifact(
             collection.status_names()
         ))
     })?;
-    if status != placement {
-        return Err(malformed(format!(
-            "lifecycle mismatch: the file sits in `{dir_rel}` but declares \
-             `status: {status}`; placement and status must agree"
-        )));
-    }
     if !(1..=MAX_SEQUENCE).contains(&meta.sequence) {
         return Err(malformed(format!(
             "front-matter `sequence` is {}, outside the valid range 1..={MAX_SEQUENCE}",
@@ -551,7 +529,7 @@ mod tests {
         let tmp = temp_repo();
         write_dragon(
             tmp.path(),
-            DRAGONS_OPEN_DIR,
+            DRAGONS_DIR,
             "0002-ulid-style.md",
             &dragon_markdown("drg_01K0P6W5PK8T19H7M2V8W6YQ4C", 2, "open", "ULID style"),
         );
@@ -559,7 +537,7 @@ mod tests {
         // ULIDs, and must tolerate unknown front-matter fields.
         write_dragon(
             tmp.path(),
-            DRAGONS_CLOSED_DIR,
+            DRAGONS_DIR,
             "0001-legacy.md",
             "---\nid: drg-bootstrap-branch-collisions\nsequence: 1\nkind: dragon\nstatus: closed\ncreated: 2026-07-20\nseverity: high\n---\n\n# Legacy dragon\n",
         );
@@ -572,32 +550,32 @@ mod tests {
         assert_eq!(artifacts[0].summary.title, "Legacy dragon");
         assert_eq!(
             artifacts[0].summary.path,
-            format!("{DRAGONS_CLOSED_DIR}/0001-legacy.md")
+            format!("{DRAGONS_DIR}/0001-legacy.md")
         );
         assert_eq!(artifacts[1].summary.id, "drg_01K0P6W5PK8T19H7M2V8W6YQ4C");
         assert_eq!(artifacts[1].summary.reference(), "dragon:2");
     }
 
     #[test]
-    fn scan_sorts_by_sequence_then_path_across_directories() {
+    fn scan_sorts_by_sequence_then_path() {
         let tmp = temp_repo();
         write_dragon(
             tmp.path(),
-            DRAGONS_OPEN_DIR,
+            DRAGONS_DIR,
             "0003-third.md",
             &dragon_markdown("id-3", 3, "open", "Third"),
         );
         write_dragon(
             tmp.path(),
-            DRAGONS_CLOSED_DIR,
+            DRAGONS_DIR,
             "0001-first.md",
             &dragon_markdown("id-1", 1, "closed", "First"),
         );
-        // Duplicate sequence across directories: closed/ sorts before open/
-        // because the tiebreak is the repository-relative path.
+        // Duplicate sequence (a branch collision): the tiebreak is the
+        // repository-relative path.
         write_dragon(
             tmp.path(),
-            DRAGONS_OPEN_DIR,
+            DRAGONS_DIR,
             "0001-duplicate.md",
             &dragon_markdown("id-1-dup", 1, "open", "Duplicate"),
         );
@@ -611,24 +589,24 @@ mod tests {
         assert_eq!(
             paths,
             vec![
-                format!("{DRAGONS_CLOSED_DIR}/0001-first.md"),
-                format!("{DRAGONS_OPEN_DIR}/0001-duplicate.md"),
-                format!("{DRAGONS_OPEN_DIR}/0003-third.md"),
+                format!("{DRAGONS_DIR}/0001-duplicate.md"),
+                format!("{DRAGONS_DIR}/0001-first.md"),
+                format!("{DRAGONS_DIR}/0003-third.md"),
             ]
         );
     }
 
     #[test]
-    fn scan_ideas_spans_all_three_lifecycle_directories() {
+    fn scan_ideas_spans_all_three_lifecycle_states() {
         let tmp = temp_repo();
-        for (dir, sequence, status, title) in [
-            (crate::repo::IDEAS_PARKED_DIR, 1u32, "parked", "Parked"),
-            (crate::repo::IDEAS_ADOPTED_DIR, 2, "adopted", "Adopted"),
-            (crate::repo::IDEAS_REJECTED_DIR, 3, "rejected", "Rejected"),
+        for (sequence, status, title) in [
+            (1u32, "parked", "Parked"),
+            (2, "adopted", "Adopted"),
+            (3, "rejected", "Rejected"),
         ] {
-            fs::create_dir_all(tmp.path().join(dir)).unwrap();
+            fs::create_dir_all(tmp.path().join(IDEAS_DIR)).unwrap();
             fs::write(
-                tmp.path().join(dir).join(format!("{sequence:04}-i.md")),
+                tmp.path().join(IDEAS_DIR).join(format!("{sequence:04}-i.md")),
                 format!(
                     "---\nid: idea-{sequence}\nsequence: {sequence}\nkind: idea\nstatus: {status}\ncreated: 2026-07-20\n---\n\n# {title}\n"
                 ),
@@ -647,11 +625,9 @@ mod tests {
     #[test]
     fn idea_status_vocabulary_excludes_dragon_statuses() {
         let tmp = temp_repo();
-        fs::create_dir_all(tmp.path().join(crate::repo::IDEAS_PARKED_DIR)).unwrap();
+        fs::create_dir_all(tmp.path().join(IDEAS_DIR)).unwrap();
         fs::write(
-            tmp.path()
-                .join(crate::repo::IDEAS_PARKED_DIR)
-                .join("0001-open-idea.md"),
+            tmp.path().join(IDEAS_DIR).join("0001-open-idea.md"),
             "---\nid: idea-x\nsequence: 1\nkind: idea\nstatus: open\ncreated: 2026-07-20\n---\n\n# T\n",
         )
         .unwrap();
@@ -662,7 +638,7 @@ mod tests {
     }
 
     #[test]
-    fn collection_lifecycle_data_answers_transitions_and_directories() {
+    fn collection_lifecycle_data_answers_transitions_and_statuses() {
         assert!(DRAGON.allows(Status::Open, Status::Closed));
         assert!(DRAGON.allows(Status::Closed, Status::Open));
         assert!(IDEA.allows(Status::Parked, Status::Adopted));
@@ -674,7 +650,6 @@ mod tests {
         ] {
             assert!(!IDEA.allows(from, to), "{from} -> {to} must be illegal");
         }
-        assert_eq!(IDEA.dir_of(Status::Parked), crate::repo::IDEAS_PARKED_DIR);
         assert_eq!(IDEA.parse_status("adopted"), Some(Status::Adopted));
         assert_eq!(IDEA.parse_status("open"), None);
     }
@@ -688,13 +663,8 @@ mod tests {
     #[test]
     fn dot_entries_are_ignored_during_scan() {
         let tmp = temp_repo();
-        write_dragon(tmp.path(), DRAGONS_OPEN_DIR, ".gitkeep", "");
-        write_dragon(
-            tmp.path(),
-            DRAGONS_OPEN_DIR,
-            ".strata.artifact.tmpXYZ",
-            "junk",
-        );
+        write_dragon(tmp.path(), DRAGONS_DIR, ".gitkeep", "");
+        write_dragon(tmp.path(), DRAGONS_DIR, ".strata.artifact.tmpXYZ", "junk");
 
         assert!(scan(tmp.path(), &DRAGON).unwrap().is_empty());
     }
@@ -704,7 +674,7 @@ mod tests {
         let tmp = temp_repo();
         let content = dragon_markdown("id-1", 1, "open", "Exact bytes")
             + "\ntrailing detail with  double spaces\n";
-        write_dragon(tmp.path(), DRAGONS_OPEN_DIR, "0001-exact.md", &content);
+        write_dragon(tmp.path(), DRAGONS_DIR, "0001-exact.md", &content);
 
         let artifacts = scan(tmp.path(), &DRAGON).unwrap();
 
@@ -714,7 +684,7 @@ mod tests {
     #[test]
     fn malformed_filename_is_a_typed_error_naming_the_path() {
         let tmp = temp_repo();
-        write_dragon(tmp.path(), DRAGONS_OPEN_DIR, "notes.txt", "not an artifact");
+        write_dragon(tmp.path(), DRAGONS_DIR, "notes.txt", "not an artifact");
 
         let err = scan(tmp.path(), &DRAGON).unwrap_err();
 
@@ -724,12 +694,7 @@ mod tests {
     #[test]
     fn missing_front_matter_is_malformed() {
         let tmp = temp_repo();
-        write_dragon(
-            tmp.path(),
-            DRAGONS_OPEN_DIR,
-            "0001-bare.md",
-            "# Just a title\n",
-        );
+        write_dragon(tmp.path(), DRAGONS_DIR, "0001-bare.md", "# Just a title\n");
 
         let err = scan(tmp.path(), &DRAGON).unwrap_err();
 
@@ -741,7 +706,7 @@ mod tests {
         let tmp = temp_repo();
         write_dragon(
             tmp.path(),
-            DRAGONS_OPEN_DIR,
+            DRAGONS_DIR,
             "0001-open-ended.md",
             "---\nid: x\nsequence: 1\n\n# Title\n",
         );
@@ -756,7 +721,7 @@ mod tests {
         let tmp = temp_repo();
         write_dragon(
             tmp.path(),
-            DRAGONS_OPEN_DIR,
+            DRAGONS_DIR,
             "0001-broken.md",
             "---\nid: [unclosed\n---\n\n# Title\n",
         );
@@ -771,7 +736,7 @@ mod tests {
         let tmp = temp_repo();
         write_dragon(
             tmp.path(),
-            DRAGONS_OPEN_DIR,
+            DRAGONS_DIR,
             "0001-incomplete.md",
             "---\nid: x\nsequence: 1\nkind: dragon\nstatus: open\n---\n\n# Title\n",
         );
@@ -786,7 +751,7 @@ mod tests {
         let tmp = temp_repo();
         write_dragon(
             tmp.path(),
-            DRAGONS_OPEN_DIR,
+            DRAGONS_DIR,
             "0001-typed.md",
             "---\nid: x\nsequence: seven\nkind: dragon\nstatus: open\ncreated: 2026-07-20\n---\n\n# Title\n",
         );
@@ -801,7 +766,7 @@ mod tests {
         let tmp = temp_repo();
         write_dragon(
             tmp.path(),
-            DRAGONS_OPEN_DIR,
+            DRAGONS_DIR,
             "0001-decision.md",
             "---\nid: x\nsequence: 1\nkind: decision\nstatus: open\ncreated: 2026-07-20\n---\n\n# Title\n",
         );
@@ -816,7 +781,7 @@ mod tests {
         let tmp = temp_repo();
         write_dragon(
             tmp.path(),
-            DRAGONS_OPEN_DIR,
+            DRAGONS_DIR,
             "0001-status.md",
             &dragon_markdown("x", 1, "resolved", "Title"),
         );
@@ -827,18 +792,35 @@ mod tests {
     }
 
     #[test]
-    fn status_and_placement_must_agree() {
+    fn any_admitted_status_is_legal_anywhere_in_the_collection_directory() {
         let tmp = temp_repo();
         write_dragon(
             tmp.path(),
-            DRAGONS_OPEN_DIR,
-            "0001-misplaced.md",
-            &dragon_markdown("x", 1, "closed", "Misplaced"),
+            DRAGONS_DIR,
+            "0001-settled.md",
+            &dragon_markdown("x", 1, "closed", "Settled"),
         );
+
+        let artifacts = scan(tmp.path(), &DRAGON).unwrap();
+
+        assert_eq!(artifacts[0].summary.status, Status::Closed);
+    }
+
+    #[test]
+    fn directory_inside_a_collection_directory_is_a_conflict() {
+        // A leftover lifecycle subdirectory from before decision 11.
+        let tmp = temp_repo();
+        fs::create_dir(tmp.path().join(DRAGONS_DIR).join("open")).unwrap();
 
         let err = scan(tmp.path(), &DRAGON).unwrap_err();
 
-        expect_malformed(err, "0001-misplaced.md", "lifecycle mismatch");
+        match err {
+            Error::ArtifactConflict { path, reason } => {
+                assert!(path.ends_with("open"), "{path:?}");
+                assert!(reason.contains("flat"), "{reason}");
+            }
+            other => panic!("expected conflict, got {other:?}"),
+        }
     }
 
     #[test]
@@ -846,7 +828,7 @@ mod tests {
         let tmp = temp_repo();
         write_dragon(
             tmp.path(),
-            DRAGONS_OPEN_DIR,
+            DRAGONS_DIR,
             "0002-shifted.md",
             &dragon_markdown("x", 3, "open", "Shifted"),
         );
@@ -861,7 +843,7 @@ mod tests {
         let tmp = temp_repo();
         write_dragon(
             tmp.path(),
-            DRAGONS_OPEN_DIR,
+            DRAGONS_DIR,
             "0000-zero.md",
             &dragon_markdown("x", 0, "open", "Zero"),
         );
@@ -876,7 +858,7 @@ mod tests {
         let tmp = temp_repo();
         write_dragon(
             tmp.path(),
-            DRAGONS_OPEN_DIR,
+            DRAGONS_DIR,
             "0001-anon.md",
             "---\nid: \"\"\nsequence: 1\nkind: dragon\nstatus: open\ncreated: 2026-07-20\n---\n\n# Title\n",
         );
@@ -891,7 +873,7 @@ mod tests {
         let tmp = temp_repo();
         write_dragon(
             tmp.path(),
-            DRAGONS_OPEN_DIR,
+            DRAGONS_DIR,
             "0001-untitled.md",
             "---\nid: x\nsequence: 1\nkind: dragon\nstatus: open\ncreated: 2026-07-20\n---\n\n## Only a subsection\n",
         );
@@ -906,7 +888,7 @@ mod tests {
         let tmp = temp_repo();
         write_dragon(
             tmp.path(),
-            DRAGONS_OPEN_DIR,
+            DRAGONS_DIR,
             "0001-twice.md",
             &(dragon_markdown("x", 1, "open", "First title") + "\n# Second title\n"),
         );
@@ -921,7 +903,7 @@ mod tests {
         let tmp = temp_repo();
         write_dragon(
             tmp.path(),
-            DRAGONS_OPEN_DIR,
+            DRAGONS_DIR,
             "0001-fenced.md",
             &(dragon_markdown("x", 1, "open", "Fenced")
                 + "\n```sh\n# a shell comment, not a heading\n```\n"),
@@ -937,13 +919,13 @@ mod tests {
         let tmp = temp_repo();
         write_dragon(
             tmp.path(),
-            DRAGONS_OPEN_DIR,
+            DRAGONS_DIR,
             "0001-one.md",
             &dragon_markdown("drg-legacy-one", 1, "open", "One"),
         );
         write_dragon(
             tmp.path(),
-            DRAGONS_OPEN_DIR,
+            DRAGONS_DIR,
             "0002-two.md",
             &dragon_markdown("drg_01K0P6W5PK8T19H7M2V8W6YQ4C", 2, "open", "Two"),
         );
@@ -970,13 +952,13 @@ mod tests {
         let tmp = temp_repo();
         write_dragon(
             tmp.path(),
-            DRAGONS_OPEN_DIR,
+            DRAGONS_DIR,
             "0001-a.md",
             &dragon_markdown("id-a", 1, "open", "A"),
         );
         write_dragon(
             tmp.path(),
-            DRAGONS_CLOSED_DIR,
+            DRAGONS_DIR,
             "0001-b.md",
             &dragon_markdown("id-b", 1, "closed", "B"),
         );
@@ -1003,13 +985,13 @@ mod tests {
         let tmp = temp_repo();
         write_dragon(
             tmp.path(),
-            DRAGONS_OPEN_DIR,
+            DRAGONS_DIR,
             "0001-a.md",
             &dragon_markdown("id-same", 1, "open", "A"),
         );
         write_dragon(
             tmp.path(),
-            DRAGONS_OPEN_DIR,
+            DRAGONS_DIR,
             "0002-b.md",
             &dragon_markdown("id-same", 2, "open", "B"),
         );
@@ -1022,19 +1004,18 @@ mod tests {
 
     #[test]
     fn missing_managed_directory_scans_as_an_empty_collection() {
+        // The ideas directory is created on first use; its absence is an
+        // empty collection, not damage, even while dragons exist.
         let tmp = temp_repo();
         write_dragon(
             tmp.path(),
-            DRAGONS_OPEN_DIR,
+            DRAGONS_DIR,
             "0001-alone.md",
             &dragon_markdown("id-1", 1, "open", "Alone"),
         );
-        fs::remove_dir(tmp.path().join(DRAGONS_CLOSED_DIR)).unwrap();
 
-        let artifacts = scan(tmp.path(), &DRAGON).unwrap();
-
-        assert_eq!(artifacts.len(), 1);
-        assert_eq!(artifacts[0].summary.title, "Alone");
+        assert!(scan(tmp.path(), &IDEA).unwrap().is_empty());
+        assert_eq!(scan(tmp.path(), &DRAGON).unwrap().len(), 1);
     }
 
     #[test]
@@ -1050,14 +1031,14 @@ mod tests {
     #[test]
     fn non_directory_at_managed_path_is_a_conflict() {
         let tmp = temp_repo();
-        fs::remove_dir(tmp.path().join(DRAGONS_CLOSED_DIR)).unwrap();
-        fs::write(tmp.path().join(DRAGONS_CLOSED_DIR), "not a directory").unwrap();
+        fs::remove_dir(tmp.path().join(DRAGONS_DIR)).unwrap();
+        fs::write(tmp.path().join(DRAGONS_DIR), "not a directory").unwrap();
 
         let err = scan(tmp.path(), &DRAGON).unwrap_err();
 
         match err {
             Error::ArtifactConflict { path, .. } => {
-                assert!(path.ends_with(DRAGONS_CLOSED_DIR), "{path:?}");
+                assert!(path.ends_with(DRAGONS_DIR), "{path:?}");
             }
             other => panic!("expected artifact conflict, got {other:?}"),
         }
@@ -1072,14 +1053,14 @@ mod tests {
             status: Status::Open,
             title: "A title".into(),
             created: "2026-07-20".into(),
-            path: "archaeology/dragons/open/0007-a-title.md".into(),
+            path: "archaeology/dragons/0007-a-title.md".into(),
         };
 
         assert_eq!(
             serde_json::to_string(&summary).unwrap(),
             "{\"id\":\"drg-x\",\"sequence\":7,\"kind\":\"dragon\",\"status\":\"open\",\
              \"title\":\"A title\",\"created\":\"2026-07-20\",\
-             \"path\":\"archaeology/dragons/open/0007-a-title.md\"}"
+             \"path\":\"archaeology/dragons/0007-a-title.md\"}"
         );
     }
 

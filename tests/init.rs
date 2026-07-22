@@ -9,7 +9,7 @@ use std::path::Path;
 use std::process::Output;
 
 const CONFIG_FILE: &str = ".strata.toml";
-const REQUIRED_DIRS: [&str; 2] = ["archaeology/dragons/open", "archaeology/dragons/closed"];
+const REQUIRED_DIRS: [&str; 2] = ["archaeology/dragons", "archaeology/dragons"];
 
 fn strata_in(dir: &Path, args: &[&str]) -> Output {
     std::process::Command::new(env!("CARGO_BIN_EXE_strata"))

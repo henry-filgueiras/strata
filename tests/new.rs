@@ -8,8 +8,7 @@ use std::path::Path;
 use std::process::Output;
 
 const CONFIG_FILE: &str = ".strata.toml";
-const OPEN_DIR: &str = "archaeology/dragons/open";
-const CLOSED_DIR: &str = "archaeology/dragons/closed";
+const DRAGONS_DIR: &str = "archaeology/dragons";
 
 fn strata_in(dir: &Path, args: &[&str]) -> Output {
     std::process::Command::new(env!("CARGO_BIN_EXE_strata"))
@@ -43,7 +42,7 @@ fn new_dragon_from_repository_root_reports_reference_and_path() {
     assert!(out.status.success(), "new failed:\n{}", stderr(&out));
     let text = stdout(&out);
     assert!(text.contains("dragon:1"), "missing reference:\n{text}");
-    let rel = format!("{OPEN_DIR}/0001-branch-sequence-collisions.md");
+    let rel = format!("{DRAGONS_DIR}/0001-branch-sequence-collisions.md");
     assert!(text.contains(&rel), "missing relative path:\n{text}");
 
     let content = fs::read_to_string(tmp.path().join(&rel)).unwrap();
@@ -78,7 +77,7 @@ fn new_dragon_from_nested_directory_writes_at_the_repository_root() {
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(
         tmp.path()
-            .join(OPEN_DIR)
+            .join(DRAGONS_DIR)
             .join("0001-found-from-below.md")
             .is_file(),
         "artifact must land under the discovered root"
@@ -88,7 +87,11 @@ fn new_dragon_from_nested_directory_writes_at_the_repository_root() {
 #[test]
 fn sequences_advance_across_invocations_and_closed_artifacts() {
     let tmp = init_repo();
-    fs::write(tmp.path().join(CLOSED_DIR).join("0004-resolved.md"), "seed").unwrap();
+    fs::write(
+        tmp.path().join(DRAGONS_DIR).join("0004-resolved.md"),
+        "seed",
+    )
+    .unwrap();
 
     let first = strata_in(tmp.path(), &["new", "dragon", "First"]);
     let second = strata_in(tmp.path(), &["new", "dragon", "Second"]);
@@ -97,8 +100,13 @@ fn sequences_advance_across_invocations_and_closed_artifacts() {
     assert!(second.status.success(), "{}", stderr(&second));
     assert!(stdout(&first).contains("dragon:5"), "{}", stdout(&first));
     assert!(stdout(&second).contains("dragon:6"), "{}", stdout(&second));
-    assert!(tmp.path().join(OPEN_DIR).join("0005-first.md").is_file());
-    assert!(tmp.path().join(OPEN_DIR).join("0006-second.md").is_file());
+    assert!(tmp.path().join(DRAGONS_DIR).join("0005-first.md").is_file());
+    assert!(
+        tmp.path()
+            .join(DRAGONS_DIR)
+            .join("0006-second.md")
+            .is_file()
+    );
 }
 
 #[test]
@@ -130,7 +138,9 @@ fn malformed_marker_during_discovery_is_rejected_not_walked_past() {
         "{}",
         stderr(&out)
     );
-    let open: Vec<_> = fs::read_dir(tmp.path().join(OPEN_DIR)).unwrap().collect();
+    let open: Vec<_> = fs::read_dir(tmp.path().join(DRAGONS_DIR))
+        .unwrap()
+        .collect();
     assert!(open.is_empty(), "the outer repository must stay untouched");
 }
 
@@ -151,7 +161,7 @@ fn unsluggable_title_is_an_invalid_invocation() {
 #[test]
 fn malformed_artifact_filename_blocks_creation_with_a_named_path() {
     let tmp = init_repo();
-    fs::write(tmp.path().join(OPEN_DIR).join("scratch.txt"), "junk").unwrap();
+    fs::write(tmp.path().join(DRAGONS_DIR).join("scratch.txt"), "junk").unwrap();
 
     let out = strata_in(tmp.path(), &["new", "dragon", "Blocked"]);
 
@@ -182,7 +192,7 @@ fn marker_only_repository_survives_git_round_trip() {
     assert!(out.status.success(), "new failed:\n{}", stderr(&out));
     assert!(
         tmp.path()
-            .join(OPEN_DIR)
+            .join(DRAGONS_DIR)
             .join("0001-post-clone-risk.md")
             .is_file(),
         "the managed directory must be materialized on demand"

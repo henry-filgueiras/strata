@@ -34,9 +34,9 @@ items are tracked with the tool. The output below is real.
 
 ```console
 $ strata list dragons
-dragon:1  open  Branch sequence collisions  (archaeology/dragons/open/0001-branch-sequence-collisions.md)
-dragon:2  open  Repository validity is not closed under Git round-trip  (archaeology/dragons/open/0002-repository-validity-not-closed-under-git-round-trip.md)
-dragon:3  open  Reference marker syntax and typed edge vocabulary  (archaeology/dragons/open/0003-reference-marker-syntax-and-typed-edge-vocabulary.md)
+dragon:1  open  Branch sequence collisions  (archaeology/dragons/0001-branch-sequence-collisions.md)
+dragon:2  open  Repository validity is not closed under Git round-trip  (archaeology/dragons/0002-repository-validity-not-closed-under-git-round-trip.md)
+dragon:3  open  Reference marker syntax and typed edge vocabulary  (archaeology/dragons/0003-reference-marker-syntax-and-typed-edge-vocabulary.md)
 
 $ strata show dragon:3
 ---
@@ -66,7 +66,7 @@ $ strata list dragons --json | jq '.[-1]'
   "status": "open",
   "title": "Reference marker syntax and typed edge vocabulary",
   "created": "2026-07-20",
-  "path": "archaeology/dragons/open/0003-reference-marker-syntax-and-typed-edge-vocabulary.md"
+  "path": "archaeology/dragons/0003-reference-marker-syntax-and-typed-edge-vocabulary.md"
 }
 ```
 
@@ -126,20 +126,18 @@ flowchart LR
 ```text
 archaeology/
 ├── decisions/          settled tradeoffs and their evidence
-├── dragons/
-│   ├── open/           risks that still bite
-│   └── closed/         risks resolved, with how
-├── ideas/
-│   ├── parked/         proposals awaiting a decision
-│   ├── adopted/        promoted into decisions
-│   └── rejected/       declined, with reasoning kept
+├── dragons/            known risks, open and resolved
+├── ideas/              proposals: parked, adopted, or rejected
 ├── logs/               durable discoveries
 └── sprints/
     └── 0001-bootstrap/
         ├── sprint.md
-        ├── pending/
-        └── closed/
+        └── 0001-task.md ...
 ```
+
+Placement is flat (decision 11): every artifact lives directly in its
+collection's directory, and lifecycle state is carried only in front
+matter — a state change is a one-line diff, never a file move.
 
 ## Status
 

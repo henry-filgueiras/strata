@@ -30,7 +30,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::error::Error;
-use crate::read::{self, Artifact, Collection, Status};
+use crate::read::{self, Artifact, Collection};
 
 /// How strongly one finding indicts the repository.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -95,16 +95,7 @@ pub fn check(root: &Path) -> Result<Report, Error> {
     let mut artifacts = Vec::new();
 
     for collection in [&read::DRAGON, &read::IDEA] {
-        for (status, dir_rel) in collection.states {
-            scan_dir(
-                root,
-                collection,
-                dir_rel,
-                *status,
-                &mut findings,
-                &mut artifacts,
-            )?;
-        }
+        scan_dir(root, collection, &mut findings, &mut artifacts)?;
     }
 
     let artifacts_checked = artifacts.len();
@@ -134,16 +125,15 @@ pub fn check(root: &Path) -> Result<Report, Error> {
     })
 }
 
-/// Walk one managed directory, collecting per-file findings and cleanly
+/// Walk one collection directory, collecting per-file findings and cleanly
 /// parsed artifacts.
 fn scan_dir(
     root: &Path,
     collection: &Collection,
-    dir_rel: &str,
-    status: Status,
     findings: &mut Vec<Finding>,
     artifacts: &mut Vec<Artifact>,
 ) -> Result<(), Error> {
+    let dir_rel = collection.dir;
     let dir = root.join(dir_rel);
     let entries = match fs::read_dir(&dir) {
         Ok(entries) => entries,
@@ -189,7 +179,20 @@ fn scan_dir(
         if name_str.starts_with('.') {
             continue;
         }
-        match read::parse_artifact(&dir.join(name_str), dir_rel, name_str, collection, status) {
+        let path = dir.join(name_str);
+        if path.is_dir() {
+            findings.push(Finding {
+                problem: "artifact-conflict",
+                path: format!("{dir_rel}/{name_str}"),
+                detail: "a directory sits inside a managed collection \
+                         directory; placement is flat (decision 11), so \
+                         artifacts file directly in the collection directory"
+                    .into(),
+                severity: Severity::Error,
+            });
+            continue;
+        }
+        match read::parse_artifact(&path, dir_rel, name_str, collection) {
             Ok(artifact) => artifacts.push(artifact),
             Err(error) => findings.push(file_finding(error, dir_rel, name_str)),
         }
@@ -278,7 +281,7 @@ fn duplicate_findings(artifacts: &[Artifact]) -> Vec<Finding> {
 mod tests {
     use super::*;
     use crate::repo;
-    use crate::repo::{DRAGONS_CLOSED_DIR, DRAGONS_OPEN_DIR, IDEAS_ADOPTED_DIR, IDEAS_PARKED_DIR};
+    use crate::repo::{DRAGONS_DIR, IDEAS_DIR};
 
     fn temp_repo() -> tempfile::TempDir {
         let tmp = tempfile::tempdir().expect("create temporary directory");
@@ -309,13 +312,13 @@ mod tests {
         let tmp = temp_repo();
         write_dragon(
             tmp.path(),
-            DRAGONS_OPEN_DIR,
+            DRAGONS_DIR,
             "0001-fine.md",
             &dragon_markdown("id-1", 1, "open", "Fine"),
         );
         write_dragon(
             tmp.path(),
-            DRAGONS_CLOSED_DIR,
+            DRAGONS_DIR,
             "0002-done.md",
             &dragon_markdown("id-2", 2, "closed", "Done"),
         );
@@ -343,29 +346,29 @@ mod tests {
         let tmp = temp_repo();
         write_dragon(
             tmp.path(),
-            DRAGONS_OPEN_DIR,
+            DRAGONS_DIR,
             "0001-bad.md",
             "# No front matter\n",
         );
         write_dragon(
             tmp.path(),
-            DRAGONS_OPEN_DIR,
-            "0002-misplaced.md",
-            &dragon_markdown("id-2", 2, "closed", "Misplaced"),
+            DRAGONS_DIR,
+            "0002-unknown-status.md",
+            &dragon_markdown("id-2", 2, "resolved", "Unknown status"),
         );
-        write_dragon(tmp.path(), DRAGONS_OPEN_DIR, "junk.txt", "junk");
+        write_dragon(tmp.path(), DRAGONS_DIR, "junk.txt", "junk");
 
         let report = check(tmp.path()).unwrap();
 
         assert_eq!(
             problems(&report),
             vec![
-                ("malformed-artifact", "archaeology/dragons/open/0001-bad.md"),
+                ("malformed-artifact", "archaeology/dragons/0001-bad.md"),
                 (
                     "malformed-artifact",
-                    "archaeology/dragons/open/0002-misplaced.md"
+                    "archaeology/dragons/0002-unknown-status.md"
                 ),
-                ("malformed-artifact", "archaeology/dragons/open/junk.txt"),
+                ("malformed-artifact", "archaeology/dragons/junk.txt"),
             ]
         );
     }
@@ -375,13 +378,13 @@ mod tests {
         let tmp = temp_repo();
         write_dragon(
             tmp.path(),
-            DRAGONS_OPEN_DIR,
+            DRAGONS_DIR,
             "0001-a.md",
             &dragon_markdown("id-same", 1, "open", "A"),
         );
         write_dragon(
             tmp.path(),
-            DRAGONS_CLOSED_DIR,
+            DRAGONS_DIR,
             "0001-b.md",
             &dragon_markdown("id-same", 1, "closed", "B"),
         );
@@ -393,14 +396,10 @@ mod tests {
         assert!(by_problem.contains(&"duplicate-id"));
         assert!(by_problem.contains(&"duplicate-sequence"));
         for finding in &report.findings {
-            assert_eq!(finding.path, "archaeology/dragons/closed/0001-b.md");
+            assert_eq!(finding.path, "archaeology/dragons/0001-a.md");
             assert!(
-                finding
-                    .detail
-                    .contains("archaeology/dragons/open/0001-a.md")
-                    && finding
-                        .detail
-                        .contains("archaeology/dragons/closed/0001-b.md"),
+                finding.detail.contains("archaeology/dragons/0001-a.md")
+                    && finding.detail.contains("archaeology/dragons/0001-b.md"),
                 "detail must name every involved path: {}",
                 finding.detail
             );
@@ -423,40 +422,33 @@ mod tests {
         let tmp = temp_repo();
         seed_idea(
             tmp.path(),
-            IDEAS_PARKED_DIR,
+            IDEAS_DIR,
             "0001-fine.md",
             &idea_markdown("idea-fine", 1, "parked", "Fine"),
         );
-        // Adopted status in the parked directory: lifecycle mismatch.
         seed_idea(
             tmp.path(),
-            IDEAS_PARKED_DIR,
-            "0002-misplaced.md",
-            &idea_markdown("idea-misplaced", 2, "adopted", "Misplaced"),
+            IDEAS_DIR,
+            "0002-settled.md",
+            &idea_markdown("idea-settled", 2, "adopted", "Settled"),
         );
         // A dragon status is not an idea status.
         seed_idea(
             tmp.path(),
-            IDEAS_ADOPTED_DIR,
+            IDEAS_DIR,
             "0003-wrong-status.md",
             &idea_markdown("idea-wrong", 3, "open", "Wrong status"),
         );
 
         let report = check(tmp.path()).unwrap();
 
-        assert_eq!(report.artifacts_checked, 1);
+        assert_eq!(report.artifacts_checked, 2);
         assert_eq!(
             problems(&report),
-            vec![
-                (
-                    "malformed-artifact",
-                    "archaeology/ideas/adopted/0003-wrong-status.md"
-                ),
-                (
-                    "malformed-artifact",
-                    "archaeology/ideas/parked/0002-misplaced.md"
-                ),
-            ]
+            vec![(
+                "malformed-artifact",
+                "archaeology/ideas/0003-wrong-status.md"
+            )]
         );
     }
 
@@ -466,14 +458,14 @@ mod tests {
         // dragon:1 and idea:1 legitimately coexist.
         write_dragon(
             tmp.path(),
-            DRAGONS_OPEN_DIR,
+            DRAGONS_DIR,
             "0001-risk.md",
             &dragon_markdown("shared-id", 1, "open", "Risk"),
         );
         // The same stable id across collections is corruption.
         seed_idea(
             tmp.path(),
-            IDEAS_PARKED_DIR,
+            IDEAS_DIR,
             "0001-idea.md",
             &idea_markdown("shared-id", 1, "parked", "Idea"),
         );
@@ -482,7 +474,7 @@ mod tests {
 
         assert_eq!(
             problems(&report),
-            vec![("duplicate-id", "archaeology/dragons/open/0001-risk.md")]
+            vec![("duplicate-id", "archaeology/dragons/0001-risk.md")]
         );
         assert!(
             report.findings[0].detail.contains("shared-id"),
@@ -517,7 +509,7 @@ mod tests {
         seed_decision(tmp.path(), "dec-settles-it");
         write_dragon(
             tmp.path(),
-            DRAGONS_CLOSED_DIR,
+            DRAGONS_DIR,
             "0001-settled.md",
             &closed_dragon_with_edge("resolved-by: \"[[dec-settles-it|the settling decision]]\""),
         );
@@ -533,7 +525,7 @@ mod tests {
         let tmp = temp_repo();
         write_dragon(
             tmp.path(),
-            DRAGONS_CLOSED_DIR,
+            DRAGONS_DIR,
             "0001-settled.md",
             &closed_dragon_with_edge("resolved-by: \"[[dec-nowhere|gone]]\""),
         );
@@ -543,10 +535,7 @@ mod tests {
         assert!(!report.healthy());
         assert_eq!(
             problems(&report),
-            vec![(
-                "dangling-edge",
-                "archaeology/dragons/closed/0001-settled.md"
-            )]
+            vec![("dangling-edge", "archaeology/dragons/0001-settled.md")]
         );
         assert!(report.findings[0].detail.contains("dec-nowhere"));
     }
@@ -556,13 +545,13 @@ mod tests {
         let tmp = temp_repo();
         seed_idea(
             tmp.path(),
-            IDEAS_PARKED_DIR,
+            IDEAS_DIR,
             "0001-idea.md",
             &idea_markdown("idea-tempting", 1, "parked", "Tempting"),
         );
         write_dragon(
             tmp.path(),
-            DRAGONS_CLOSED_DIR,
+            DRAGONS_DIR,
             "0001-settled.md",
             &closed_dragon_with_edge("resolved-by: \"[[idea-tempting|an idea]]\""),
         );
@@ -571,7 +560,7 @@ mod tests {
 
         assert_eq!(
             problems(&report),
-            vec![("invalid-edge", "archaeology/dragons/closed/0001-settled.md")]
+            vec![("invalid-edge", "archaeology/dragons/0001-settled.md")]
         );
         assert!(
             report.findings[0].detail.contains("idea"),
@@ -585,7 +574,7 @@ mod tests {
         let tmp = temp_repo();
         write_dragon(
             tmp.path(),
-            DRAGONS_CLOSED_DIR,
+            DRAGONS_DIR,
             "0001-settled.md",
             &closed_dragon_with_edge("resolved-by: \"[[decision:1]]\""),
         );
@@ -595,7 +584,7 @@ mod tests {
         assert!(report.healthy(), "sugar must not fail validation");
         assert_eq!(
             problems(&report),
-            vec![("unbound-edge", "archaeology/dragons/closed/0001-settled.md")]
+            vec![("unbound-edge", "archaeology/dragons/0001-settled.md")]
         );
         assert_eq!(report.findings[0].severity, Severity::Advice);
     }
@@ -607,7 +596,7 @@ mod tests {
         // A reopened dragon still carrying its resolution edge.
         write_dragon(
             tmp.path(),
-            DRAGONS_OPEN_DIR,
+            DRAGONS_DIR,
             "0001-reopened.md",
             "---\nid: drg-reopened\nsequence: 1\nkind: dragon\nstatus: open\ncreated: 2026-07-20\nresolved-by: \"[[dec-settles-it|stale claim]]\"\n---\n\n# Reopened\n",
         );
@@ -617,7 +606,7 @@ mod tests {
         assert!(report.healthy());
         assert_eq!(
             problems(&report),
-            vec![("stale-edge", "archaeology/dragons/open/0001-reopened.md")]
+            vec![("stale-edge", "archaeology/dragons/0001-reopened.md")]
         );
     }
 
@@ -626,7 +615,7 @@ mod tests {
         let tmp = temp_repo();
         seed_idea(
             tmp.path(),
-            IDEAS_PARKED_DIR,
+            IDEAS_DIR,
             "0001-idea.md",
             "---\nid: idea-confused\nsequence: 1\nkind: idea\nstatus: parked\ncreated: 2026-07-20\nresolved-by: \"[[dec-x|label]]\"\n---\n\n# Confused\n",
         );
@@ -635,7 +624,7 @@ mod tests {
 
         assert_eq!(
             problems(&report),
-            vec![("invalid-edge", "archaeology/ideas/parked/0001-idea.md")]
+            vec![("invalid-edge", "archaeology/ideas/0001-idea.md")]
         );
         assert!(
             report.findings[0].detail.contains("belong on dragons"),
@@ -651,7 +640,7 @@ mod tests {
         // Without quotes, YAML parses `[[a|b]]` as a nested flow sequence.
         write_dragon(
             tmp.path(),
-            DRAGONS_CLOSED_DIR,
+            DRAGONS_DIR,
             "0001-settled.md",
             &closed_dragon_with_edge("resolved-by: [[dec-settles-it|label]]"),
         );
@@ -660,7 +649,7 @@ mod tests {
 
         assert_eq!(
             problems(&report),
-            vec![("invalid-edge", "archaeology/dragons/closed/0001-settled.md")]
+            vec![("invalid-edge", "archaeology/dragons/0001-settled.md")]
         );
         assert!(
             report.findings[0].detail.contains("quoted"),
@@ -674,7 +663,7 @@ mod tests {
         let tmp = temp_repo();
         write_dragon(
             tmp.path(),
-            DRAGONS_CLOSED_DIR,
+            DRAGONS_DIR,
             "0001-settled.md",
             &closed_dragon_with_edge("supersedes: \"[[dec-nowhere|not vocabulary]]\""),
         );
@@ -691,14 +680,29 @@ mod tests {
     #[test]
     fn non_directory_at_managed_path_is_a_conflict_finding() {
         let tmp = temp_repo();
-        fs::remove_dir(tmp.path().join(DRAGONS_CLOSED_DIR)).unwrap();
-        fs::write(tmp.path().join(DRAGONS_CLOSED_DIR), "not a directory").unwrap();
+        fs::remove_dir(tmp.path().join(DRAGONS_DIR)).unwrap();
+        fs::write(tmp.path().join(DRAGONS_DIR), "not a directory").unwrap();
+
+        let report = check(tmp.path()).unwrap();
+
+        assert_eq!(problems(&report), vec![("artifact-conflict", DRAGONS_DIR)]);
+    }
+
+    #[test]
+    fn leftover_lifecycle_subdirectory_is_a_conflict_finding() {
+        let tmp = temp_repo();
+        fs::create_dir(tmp.path().join(DRAGONS_DIR).join("open")).unwrap();
 
         let report = check(tmp.path()).unwrap();
 
         assert_eq!(
             problems(&report),
-            vec![("artifact-conflict", DRAGONS_CLOSED_DIR)]
+            vec![("artifact-conflict", "archaeology/dragons/open")]
+        );
+        assert!(
+            report.findings[0].detail.contains("flat"),
+            "{}",
+            report.findings[0].detail
         );
     }
 
@@ -710,11 +714,11 @@ mod tests {
         let tmp = temp_repo();
         write_dragon(
             tmp.path(),
-            DRAGONS_OPEN_DIR,
+            DRAGONS_DIR,
             "0001-fine.md",
             &dragon_markdown("id-1", 1, "open", "Fine"),
         );
-        let locked = tmp.path().join(DRAGONS_OPEN_DIR).join("0002-locked.md");
+        let locked = tmp.path().join(DRAGONS_DIR).join("0002-locked.md");
         fs::write(&locked, "locked").unwrap();
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
 
@@ -724,24 +728,16 @@ mod tests {
         assert_eq!(report.artifacts_checked, 1);
         assert_eq!(
             problems(&report),
-            vec![(
-                "unreadable-artifact",
-                "archaeology/dragons/open/0002-locked.md"
-            )]
+            vec![("unreadable-artifact", "archaeology/dragons/0002-locked.md")]
         );
     }
 
     #[test]
     fn findings_are_sorted_deterministically_by_path() {
         let tmp = temp_repo();
-        write_dragon(tmp.path(), DRAGONS_OPEN_DIR, "0002-b.md", "no front matter");
-        write_dragon(tmp.path(), DRAGONS_OPEN_DIR, "0001-a.md", "no front matter");
-        write_dragon(
-            tmp.path(),
-            DRAGONS_CLOSED_DIR,
-            "0003-c.md",
-            "no front matter",
-        );
+        write_dragon(tmp.path(), DRAGONS_DIR, "0002-b.md", "no front matter");
+        write_dragon(tmp.path(), DRAGONS_DIR, "0001-a.md", "no front matter");
+        write_dragon(tmp.path(), DRAGONS_DIR, "0003-c.md", "no front matter");
 
         let paths: Vec<String> = check(tmp.path())
             .unwrap()
@@ -753,9 +749,9 @@ mod tests {
         assert_eq!(
             paths,
             vec![
-                "archaeology/dragons/closed/0003-c.md",
-                "archaeology/dragons/open/0001-a.md",
-                "archaeology/dragons/open/0002-b.md",
+                "archaeology/dragons/0001-a.md",
+                "archaeology/dragons/0002-b.md",
+                "archaeology/dragons/0003-c.md",
             ]
         );
     }
@@ -764,7 +760,7 @@ mod tests {
     fn finding_json_field_names_and_order_are_stable() {
         let finding = Finding {
             problem: "duplicate-sequence",
-            path: "archaeology/dragons/open/0001-a.md".into(),
+            path: "archaeology/dragons/0001-a.md".into(),
             detail: "display sequence 1 is shared by: a, b".into(),
             severity: Severity::Error,
         };
@@ -772,7 +768,7 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&finding).unwrap(),
             "{\"problem\":\"duplicate-sequence\",\
-             \"path\":\"archaeology/dragons/open/0001-a.md\",\
+             \"path\":\"archaeology/dragons/0001-a.md\",\
              \"detail\":\"display sequence 1 is shared by: a, b\",\
              \"severity\":\"error\"}"
         );

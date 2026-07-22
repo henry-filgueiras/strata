@@ -78,8 +78,8 @@ pub fn create_idea(root: &Path, title: &str) -> Result<NewArtifact, Error> {
 
 /// Create a new artifact in its collection's home lifecycle state.
 ///
-/// Allocates `max(existing sequence) + 1` across every lifecycle directory
-/// of the collection, derives a deterministic kebab-case slug from `title`,
+/// Allocates `max(existing sequence) + 1` across the collection's
+/// directory, derives a deterministic kebab-case slug from `title`,
 /// assigns a fresh prefixed ULID identity, and writes the Markdown template
 /// through a temporary file with an atomic no-clobber persist. Neither
 /// `.strata.toml` nor any existing artifact is modified.
@@ -102,7 +102,7 @@ fn create(
     let sequence = next_sequence(root, collection)?;
     let id = format!("{id_prefix}{}", ulid::Ulid::new());
     let created = jiff::Zoned::now().strftime("%Y-%m-%d").to_string();
-    let (home_status, home_dir) = collection.states[0];
+    let home_status = collection.states[0];
     let content = render_artifact(
         &id,
         sequence,
@@ -116,15 +116,15 @@ fn create(
     // Git does not round-trip empty directories, so a cloned repository may
     // lack the destination; materialize it with the same conflict checks
     // `init` uses.
-    crate::repo::ensure_dir(root, home_dir, &mut Vec::new())?;
+    crate::repo::ensure_dir(root, collection.dir, &mut Vec::new())?;
     let filename = format!("{sequence:04}-{slug}.md");
-    write_new(&root.join(home_dir), &filename, &content)?;
+    write_new(&root.join(collection.dir), &filename, &content)?;
 
     Ok(NewArtifact {
         kind,
         id,
         sequence,
-        relative_path: Path::new(home_dir).join(filename),
+        relative_path: Path::new(collection.dir).join(filename),
     })
 }
 
@@ -151,16 +151,13 @@ pub fn slugify(title: &str) -> Option<String> {
     if slug.is_empty() { None } else { Some(slug) }
 }
 
-/// Allocate the next display sequence by scanning every lifecycle directory
-/// of the collection, refusing to exceed the four-digit space.
+/// Allocate the next display sequence by scanning the collection's
+/// directory, refusing to exceed the four-digit space.
 fn next_sequence(root: &Path, collection: &Collection) -> Result<u32, Error> {
-    let mut max = 0u32;
-    for (_, dir) in collection.states {
-        max = max.max(max_sequence_in(&root.join(dir), collection.kind)?);
-    }
+    let max = max_sequence_in(&root.join(collection.dir), collection.kind)?;
     if max >= MAX_SEQUENCE {
         return Err(Error::ArtifactConflict {
-            path: root.join(collection.states[0].1),
+            path: root.join(collection.dir),
             reason: format!(
                 "the {} collection has exhausted the four-digit display \
                  sequence space (last sequence is {MAX_SEQUENCE})",
@@ -312,7 +309,7 @@ fn write_new(dir: &Path, filename: &str, content: &str) -> Result<(), Error> {
 mod tests {
     use super::*;
     use crate::repo;
-    use crate::repo::{DRAGONS_CLOSED_DIR, DRAGONS_OPEN_DIR, IDEAS_PARKED_DIR, IDEAS_REJECTED_DIR};
+    use crate::repo::{DRAGONS_DIR, IDEAS_DIR};
 
     fn temp_repo() -> tempfile::TempDir {
         let tmp = tempfile::tempdir().expect("create temporary directory");
@@ -320,8 +317,8 @@ mod tests {
         tmp
     }
 
-    fn open_dir_entries(root: &Path) -> Vec<String> {
-        let mut names: Vec<String> = fs::read_dir(root.join(DRAGONS_OPEN_DIR))
+    fn dragons_dir_entries(root: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(root.join(DRAGONS_DIR))
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
@@ -367,7 +364,7 @@ mod tests {
         assert_eq!(dragon.reference(), "dragon:1");
         assert_eq!(
             dragon.relative_path,
-            Path::new(DRAGONS_OPEN_DIR).join("0001-branch-sequence-collisions.md")
+            Path::new(DRAGONS_DIR).join("0001-branch-sequence-collisions.md")
         );
         let content = fs::read_to_string(tmp.path().join(&dragon.relative_path)).unwrap();
         assert!(content.starts_with("---\n"), "{content}");
@@ -406,7 +403,7 @@ mod tests {
         assert_eq!(idea.reference(), "idea:1");
         assert_eq!(
             idea.relative_path,
-            Path::new(IDEAS_PARKED_DIR).join("0001-declarative-specs.md")
+            Path::new(IDEAS_DIR).join("0001-declarative-specs.md")
         );
         assert!(idea.id.starts_with(IDEA_ID_PREFIX), "{}", idea.id);
         let content = fs::read_to_string(tmp.path().join(&idea.relative_path)).unwrap();
@@ -430,32 +427,32 @@ mod tests {
     }
 
     #[test]
-    fn idea_sequences_scan_every_lifecycle_directory_and_ignore_dragons() {
+    fn idea_sequences_are_collection_scoped_and_ignore_dragons() {
         let tmp = temp_repo();
         // A dragon with a high sequence must not influence idea allocation.
         fs::write(
-            tmp.path().join(DRAGONS_OPEN_DIR).join("0009-dragon.md"),
+            tmp.path().join(DRAGONS_DIR).join("0009-dragon.md"),
             "seeded",
         )
         .unwrap();
-        fs::create_dir_all(tmp.path().join(IDEAS_REJECTED_DIR)).unwrap();
+        fs::create_dir_all(tmp.path().join(IDEAS_DIR)).unwrap();
         fs::write(
-            tmp.path().join(IDEAS_REJECTED_DIR).join("0004-rejected.md"),
+            tmp.path().join(IDEAS_DIR).join("0004-rejected.md"),
             "seeded",
         )
         .unwrap();
 
         let idea = create_idea(tmp.path(), "Next idea").unwrap();
 
-        assert_eq!(idea.sequence, 5, "must continue after the rejected maximum");
+        assert_eq!(idea.sequence, 5, "must continue after the terminal maximum");
     }
 
     #[test]
-    fn create_idea_materializes_the_parked_directory_on_first_use() {
+    fn create_idea_materializes_the_ideas_directory_on_first_use() {
         let tmp = temp_repo();
         assert!(
-            !tmp.path().join(IDEAS_PARKED_DIR).exists(),
-            "init must not pre-create idea lifecycle directories"
+            !tmp.path().join(IDEAS_DIR).exists(),
+            "init must not pre-create the ideas directory"
         );
 
         let idea = create_idea(tmp.path(), "First idea").unwrap();
@@ -508,25 +505,21 @@ mod tests {
     }
 
     #[test]
-    fn sequence_allocation_scans_open_and_closed_directories() {
+    fn sequence_allocation_spans_every_lifecycle_state() {
         let tmp = temp_repo();
+        fs::write(tmp.path().join(DRAGONS_DIR).join("0001-old.md"), "seeded").unwrap();
         fs::write(
-            tmp.path().join(DRAGONS_OPEN_DIR).join("0001-old.md"),
-            "seeded",
-        )
-        .unwrap();
-        fs::write(
-            tmp.path().join(DRAGONS_CLOSED_DIR).join("0005-resolved.md"),
+            tmp.path().join(DRAGONS_DIR).join("0005-resolved.md"),
             "seeded",
         )
         .unwrap();
 
         let dragon = create_dragon(tmp.path(), "Next risk").unwrap();
 
-        assert_eq!(dragon.sequence, 6, "must continue after the closed maximum");
+        assert_eq!(dragon.sequence, 6, "must continue after the maximum");
         assert!(
             tmp.path()
-                .join(DRAGONS_OPEN_DIR)
+                .join(DRAGONS_DIR)
                 .join("0006-next-risk.md")
                 .is_file()
         );
@@ -535,7 +528,7 @@ mod tests {
     #[test]
     fn seeded_non_ulid_ids_are_left_untouched() {
         let tmp = temp_repo();
-        let seeded_path = tmp.path().join(DRAGONS_OPEN_DIR).join("0001-seeded.md");
+        let seeded_path = tmp.path().join(DRAGONS_DIR).join("0001-seeded.md");
         let seeded = "---\nid: drg-bootstrap-branch-collisions\nsequence: 1\n---\n";
         fs::write(&seeded_path, seeded).unwrap();
 
@@ -559,7 +552,7 @@ mod tests {
             "0002-.md",
             "abcd-x.md",
         ] {
-            let path = tmp.path().join(DRAGONS_OPEN_DIR).join(bad);
+            let path = tmp.path().join(DRAGONS_DIR).join(bad);
             fs::write(&path, "junk").unwrap();
 
             let err = create_dragon(tmp.path(), "Any title").unwrap_err();
@@ -577,7 +570,7 @@ mod tests {
     #[test]
     fn dot_entries_are_not_artifacts_and_are_ignored() {
         let tmp = temp_repo();
-        fs::write(tmp.path().join(DRAGONS_OPEN_DIR).join(".gitkeep"), "").unwrap();
+        fs::write(tmp.path().join(DRAGONS_DIR).join(".gitkeep"), "").unwrap();
 
         let dragon = create_dragon(tmp.path(), "Ignores dotfiles").unwrap();
 
@@ -600,8 +593,8 @@ mod tests {
     #[test]
     fn non_directory_at_managed_path_is_a_conflict() {
         let tmp = temp_repo();
-        fs::remove_dir(tmp.path().join(DRAGONS_CLOSED_DIR)).unwrap();
-        fs::write(tmp.path().join(DRAGONS_CLOSED_DIR), "not a directory").unwrap();
+        fs::remove_dir(tmp.path().join(DRAGONS_DIR)).unwrap();
+        fs::write(tmp.path().join(DRAGONS_DIR), "not a directory").unwrap();
 
         let err = create_dragon(tmp.path(), "Any title").unwrap_err();
 
@@ -611,18 +604,14 @@ mod tests {
     #[test]
     fn sequence_exhaustion_is_a_typed_error_not_a_five_digit_filename() {
         let tmp = temp_repo();
-        fs::write(
-            tmp.path().join(DRAGONS_CLOSED_DIR).join("9999-last.md"),
-            "seeded",
-        )
-        .unwrap();
+        fs::write(tmp.path().join(DRAGONS_DIR).join("9999-last.md"), "seeded").unwrap();
 
         let err = create_dragon(tmp.path(), "One too many").unwrap_err();
 
         assert!(matches!(err, Error::ArtifactConflict { .. }), "{err:?}");
         assert_eq!(
-            open_dir_entries(tmp.path()),
-            Vec::<String>::new(),
+            dragons_dir_entries(tmp.path()),
+            vec!["9999-last.md".to_string()],
             "no artifact may be created on exhaustion"
         );
     }
@@ -630,7 +619,7 @@ mod tests {
     #[test]
     fn destination_conflict_refuses_overwrite_and_leaves_no_temporary() {
         let tmp = temp_repo();
-        let dir = tmp.path().join(DRAGONS_OPEN_DIR);
+        let dir = tmp.path().join(DRAGONS_DIR);
         fs::write(dir.join("0001-taken.md"), "original").unwrap();
 
         // Drive the write layer directly: it is the guard that holds even
@@ -644,7 +633,7 @@ mod tests {
             "the existing artifact must survive byte-identical"
         );
         assert_eq!(
-            open_dir_entries(tmp.path()),
+            dragons_dir_entries(tmp.path()),
             vec!["0001-taken.md".to_string()],
             "a failed persist must not litter temporaries"
         );
@@ -656,7 +645,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let tmp = temp_repo();
-        let dir = tmp.path().join(DRAGONS_OPEN_DIR);
+        let dir = tmp.path().join(DRAGONS_DIR);
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
 
         let result = create_dragon(tmp.path(), "Cannot be written");
@@ -667,7 +656,7 @@ mod tests {
             "{result:?}"
         );
         assert_eq!(
-            open_dir_entries(tmp.path()),
+            dragons_dir_entries(tmp.path()),
             Vec::<String>::new(),
             "a failed creation must leave nothing behind"
         );
@@ -680,7 +669,7 @@ mod tests {
         let err = create_dragon(tmp.path(), "!!!").unwrap_err();
 
         assert!(matches!(err, Error::InvalidInvocation { .. }), "{err:?}");
-        assert_eq!(open_dir_entries(tmp.path()), Vec::<String>::new());
+        assert_eq!(dragons_dir_entries(tmp.path()), Vec::<String>::new());
     }
 
     #[test]

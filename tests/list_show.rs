@@ -10,8 +10,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Output;
 
-const OPEN_DIR: &str = "archaeology/dragons/open";
-const CLOSED_DIR: &str = "archaeology/dragons/closed";
+const DRAGONS_DIR: &str = "archaeology/dragons";
 
 fn strata_in(dir: &Path, args: &[&str]) -> Output {
     std::process::Command::new(env!("CARGO_BIN_EXE_strata"))
@@ -56,8 +55,8 @@ fn seed_known_pair(root: &Path) -> (String, String) {
         "closed",
         "Resolved risk",
     );
-    write_artifact(root, OPEN_DIR, "0002-legacy-seeded-risk.md", &open);
-    write_artifact(root, CLOSED_DIR, "0001-resolved-risk.md", &closed);
+    write_artifact(root, DRAGONS_DIR, "0002-legacy-seeded-risk.md", &open);
+    write_artifact(root, DRAGONS_DIR, "0001-resolved-risk.md", &closed);
     (open, closed)
 }
 
@@ -76,7 +75,7 @@ fn list_from_repository_root_prints_reference_status_title_and_path() {
         "dragon:1",
         "closed",
         "Resolved risk",
-        "archaeology/dragons/closed/0001-resolved-risk.md",
+        "archaeology/dragons/0001-resolved-risk.md",
     ] {
         assert!(lines[0].contains(needle), "missing `{needle}`:\n{text}");
     }
@@ -84,7 +83,7 @@ fn list_from_repository_root_prints_reference_status_title_and_path() {
         "dragon:2",
         "open",
         "Legacy seeded risk",
-        "archaeology/dragons/open/0002-legacy-seeded-risk.md",
+        "archaeology/dragons/0002-legacy-seeded-risk.md",
     ] {
         assert!(lines[1].contains(needle), "missing `{needle}`:\n{text}");
     }
@@ -117,19 +116,19 @@ fn list_orders_by_sequence_then_path_across_open_and_closed() {
     let tmp = init_repo();
     write_artifact(
         tmp.path(),
-        OPEN_DIR,
+        DRAGONS_DIR,
         "0003-third.md",
         &dragon_markdown("id-3", 3, "open", "Third"),
     );
     write_artifact(
         tmp.path(),
-        CLOSED_DIR,
+        DRAGONS_DIR,
         "0001-first.md",
         &dragon_markdown("id-1", 1, "closed", "First"),
     );
     write_artifact(
         tmp.path(),
-        OPEN_DIR,
+        DRAGONS_DIR,
         "0002-second.md",
         &dragon_markdown("id-2", 2, "open", "Second"),
     );
@@ -162,11 +161,11 @@ fn list_json_pins_field_names_order_and_sorting() {
         "{\"id\":\"drg_01K0P6W5PK8T19H7M2V8W6YQ4C\",\"sequence\":1,",
         "\"kind\":\"dragon\",\"status\":\"closed\",\"title\":\"Resolved risk\",",
         "\"created\":\"2026-07-20\",",
-        "\"path\":\"archaeology/dragons/closed/0001-resolved-risk.md\"},",
+        "\"path\":\"archaeology/dragons/0001-resolved-risk.md\"},",
         "{\"id\":\"drg-legacy-seeded\",\"sequence\":2,",
         "\"kind\":\"dragon\",\"status\":\"open\",\"title\":\"Legacy seeded risk\",",
         "\"created\":\"2026-07-20\",",
-        "\"path\":\"archaeology/dragons/open/0002-legacy-seeded-risk.md\"}",
+        "\"path\":\"archaeology/dragons/0002-legacy-seeded-risk.md\"}",
         "]\n"
     );
     assert_eq!(stdout(&out), expected);
@@ -210,7 +209,7 @@ fn show_by_generated_ulid_style_id() {
     let out = strata_in(tmp.path(), &["new", "dragon", "Freshly created"]);
     assert!(out.status.success(), "{}", stderr(&out));
     let content =
-        fs::read_to_string(tmp.path().join(OPEN_DIR).join("0001-freshly-created.md")).unwrap();
+        fs::read_to_string(tmp.path().join(DRAGONS_DIR).join("0001-freshly-created.md")).unwrap();
     let id = content
         .lines()
         .find_map(|line| line.strip_prefix("id: "))
@@ -252,7 +251,7 @@ fn show_json_includes_summary_fields_and_exact_content() {
     assert_eq!(object["created"], "2026-07-20");
     assert_eq!(
         object["path"],
-        "archaeology/dragons/open/0002-legacy-seeded-risk.md"
+        "archaeology/dragons/0002-legacy-seeded-risk.md"
     );
     assert_eq!(
         object["content"], open,
@@ -295,13 +294,13 @@ fn duplicate_sequence_makes_a_human_reference_ambiguous() {
     let tmp = init_repo();
     write_artifact(
         tmp.path(),
-        OPEN_DIR,
+        DRAGONS_DIR,
         "0001-branch-a.md",
         &dragon_markdown("id-a", 1, "open", "Branch A"),
     );
     write_artifact(
         tmp.path(),
-        CLOSED_DIR,
+        DRAGONS_DIR,
         "0001-branch-b.md",
         &dragon_markdown("id-b", 1, "closed", "Branch B"),
     );
@@ -322,13 +321,13 @@ fn duplicate_stable_id_is_ambiguous() {
     let tmp = init_repo();
     write_artifact(
         tmp.path(),
-        OPEN_DIR,
+        DRAGONS_DIR,
         "0001-copy-a.md",
         &dragon_markdown("id-same", 1, "open", "Copy A"),
     );
     write_artifact(
         tmp.path(),
-        OPEN_DIR,
+        DRAGONS_DIR,
         "0002-copy-b.md",
         &dragon_markdown("id-same", 2, "open", "Copy B"),
     );
@@ -348,13 +347,13 @@ fn list_still_succeeds_with_duplicate_sequences() {
     let tmp = init_repo();
     write_artifact(
         tmp.path(),
-        OPEN_DIR,
+        DRAGONS_DIR,
         "0001-branch-a.md",
         &dragon_markdown("id-a", 1, "open", "Branch A"),
     );
     write_artifact(
         tmp.path(),
-        CLOSED_DIR,
+        DRAGONS_DIR,
         "0001-branch-b.md",
         &dragon_markdown("id-b", 1, "closed", "Branch B"),
     );
@@ -374,7 +373,7 @@ fn malformed_artifact_fails_list_naming_the_path() {
     let tmp = init_repo();
     write_artifact(
         tmp.path(),
-        OPEN_DIR,
+        DRAGONS_DIR,
         "0001-broken.md",
         "---\nid: x\nsequence: 1\n---\n\n# Missing required fields\n",
     );
@@ -394,9 +393,9 @@ fn malformed_artifact_fails_show_even_for_other_references() {
     seed_known_pair(tmp.path());
     write_artifact(
         tmp.path(),
-        OPEN_DIR,
+        DRAGONS_DIR,
         "0003-broken.md",
-        &dragon_markdown("id-broken", 3, "closed", "Wrong status for open dir"),
+        &dragon_markdown("id-broken", 3, "resolved", "Unknown status"),
     );
 
     let out = strata_in(tmp.path(), &["show", "dragon:2"]);
@@ -412,8 +411,8 @@ fn malformed_artifact_fails_show_even_for_other_references() {
 #[test]
 fn dot_prefixed_entries_are_ignored_by_list() {
     let tmp = init_repo();
-    write_artifact(tmp.path(), OPEN_DIR, ".gitkeep", "");
-    write_artifact(tmp.path(), OPEN_DIR, ".strata.artifact.tmpABC", "junk");
+    write_artifact(tmp.path(), DRAGONS_DIR, ".gitkeep", "");
+    write_artifact(tmp.path(), DRAGONS_DIR, ".strata.artifact.tmpABC", "junk");
 
     let out = strata_in(tmp.path(), &["list", "dragons", "--json"]);
 

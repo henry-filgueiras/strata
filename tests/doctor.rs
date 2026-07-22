@@ -4,8 +4,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Output;
 
-const OPEN_DIR: &str = "archaeology/dragons/open";
-const CLOSED_DIR: &str = "archaeology/dragons/closed";
+const DRAGONS_DIR: &str = "archaeology/dragons";
 
 fn strata_in(dir: &Path, args: &[&str]) -> Output {
     std::process::Command::new(env!("CARGO_BIN_EXE_strata"))
@@ -40,7 +39,7 @@ fn dragon_markdown(id: &str, sequence: u32, status: &str, title: &str) -> String
 fn healthy_repository_exits_zero_with_a_summary() {
     let tmp = init_repo();
     fs::write(
-        tmp.path().join(OPEN_DIR).join("0001-fine.md"),
+        tmp.path().join(DRAGONS_DIR).join("0001-fine.md"),
         dragon_markdown("id-1", 1, "open", "Fine"),
     )
     .unwrap();
@@ -72,17 +71,17 @@ fn marker_only_repository_is_healthy() {
 fn unhealthy_repository_reports_every_finding_and_exits_nine() {
     let tmp = init_repo();
     fs::write(
-        tmp.path().join(OPEN_DIR).join("0001-bare.md"),
+        tmp.path().join(DRAGONS_DIR).join("0001-bare.md"),
         "# No front matter\n",
     )
     .unwrap();
     fs::write(
-        tmp.path().join(OPEN_DIR).join("0002-a.md"),
+        tmp.path().join(DRAGONS_DIR).join("0002-a.md"),
         dragon_markdown("id-same", 2, "open", "A"),
     )
     .unwrap();
     fs::write(
-        tmp.path().join(CLOSED_DIR).join("0002-b.md"),
+        tmp.path().join(DRAGONS_DIR).join("0002-b.md"),
         dragon_markdown("id-same", 2, "closed", "B"),
     )
     .unwrap();
@@ -111,7 +110,7 @@ fn unhealthy_repository_reports_every_finding_and_exits_nine() {
 fn json_findings_stay_parseable_when_validation_fails() {
     let tmp = init_repo();
     fs::write(
-        tmp.path().join(OPEN_DIR).join("0001-bare.md"),
+        tmp.path().join(DRAGONS_DIR).join("0001-bare.md"),
         "# No front matter\n",
     )
     .unwrap();
@@ -124,7 +123,7 @@ fn json_findings_stay_parseable_when_validation_fails() {
     let findings = findings.as_array().expect("findings must be an array");
     assert_eq!(findings.len(), 1, "{findings:?}");
     assert_eq!(findings[0]["problem"], "malformed-artifact");
-    assert_eq!(findings[0]["path"], "archaeology/dragons/open/0001-bare.md");
+    assert_eq!(findings[0]["path"], "archaeology/dragons/0001-bare.md");
 }
 
 #[test]
@@ -143,7 +142,7 @@ fn advisory_findings_report_without_failing_validation() {
     // An unbound sugar edge is legal but weak (decisions 6 and 10):
     // reported as advice, never as corruption.
     fs::write(
-        tmp.path().join(CLOSED_DIR).join("0001-settled.md"),
+        tmp.path().join(DRAGONS_DIR).join("0001-settled.md"),
         "---\nid: drg-settled\nsequence: 1\nkind: dragon\nstatus: closed\ncreated: 2026-07-20\nresolved-by: \"[[decision:1]]\"\n---\n\n# Settled\n",
     )
     .unwrap();
@@ -166,7 +165,7 @@ fn advisory_findings_report_without_failing_validation() {
 fn dangling_provenance_edges_are_corruption() {
     let tmp = init_repo();
     fs::write(
-        tmp.path().join(CLOSED_DIR).join("0001-settled.md"),
+        tmp.path().join(DRAGONS_DIR).join("0001-settled.md"),
         "---\nid: drg-settled\nsequence: 1\nkind: dragon\nstatus: closed\ncreated: 2026-07-20\nresolved-by: \"[[dec-nowhere|gone]]\"\n---\n\n# Settled\n",
     )
     .unwrap();
