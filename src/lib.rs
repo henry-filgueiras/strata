@@ -10,3 +10,4 @@ pub mod doctor;
 pub mod error;
 pub mod read;
 pub mod repo;
+pub mod transition;

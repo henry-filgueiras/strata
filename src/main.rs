@@ -2,9 +2,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
-use strata::cli::{Cli, Collection, Command, ShowTarget};
+use strata::cli::{ArtifactTarget, Cli, Collection, Command};
 use strata::error::Error;
-use strata::{artifact, doctor, read, repo};
+use strata::read::Status;
+use strata::{artifact, doctor, read, repo, transition};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -25,7 +26,32 @@ fn run(command: &Command) -> Result<(), Error> {
         Command::List { collection, json } => list(*collection, *json),
         Command::Show { reference, json } => show(reference, *json),
         Command::Doctor { json } => doctor(*json),
+        Command::Close { reference } => transition(reference, Status::Closed),
+        Command::Reopen { reference } => transition(reference, Status::Open),
     }
+}
+
+/// Convert a command-line artifact target into a read-model reference.
+fn dragon_ref(target: &ArtifactTarget) -> read::DragonRef<'_> {
+    match target {
+        ArtifactTarget::Reference(reference) => read::DragonRef::Sequence(reference.sequence),
+        ArtifactTarget::Id(id) => read::DragonRef::Id(id),
+    }
+}
+
+/// Transition one artifact between lifecycle states and render the outcome.
+fn transition(target: &ArtifactTarget, to: Status) -> Result<(), Error> {
+    let root = repo::discover(&cwd()?)?;
+    let done = transition::transition(&root, dragon_ref(target), &target.to_string(), to)?;
+    let verb = match to {
+        Status::Closed => "closed",
+        Status::Open => "reopened",
+    };
+    println!(
+        "{verb} {} ({} -> {}) at {}",
+        done.reference, done.from, done.to, done.to_path
+    );
+    Ok(())
 }
 
 /// Resolve the current working directory.
@@ -82,14 +108,10 @@ fn list(collection: Collection, json: bool) -> Result<(), Error> {
 }
 
 /// Resolve one artifact reference and render it.
-fn show(target: &ShowTarget, json: bool) -> Result<(), Error> {
+fn show(target: &ArtifactTarget, json: bool) -> Result<(), Error> {
     let root = repo::discover(&cwd()?)?;
     let artifacts = read::scan_dragons(&root)?;
-    let dragon_ref = match target {
-        ShowTarget::Reference(reference) => read::DragonRef::Sequence(reference.sequence),
-        ShowTarget::Id(id) => read::DragonRef::Id(id),
-    };
-    let artifact = read::resolve(&artifacts, dragon_ref, &target.to_string())?;
+    let artifact = read::resolve(&artifacts, dragon_ref(target), &target.to_string())?;
     if json {
         println!("{}", to_json(&artifact.show_record()));
     } else {

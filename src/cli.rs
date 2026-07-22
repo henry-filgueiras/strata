@@ -41,7 +41,7 @@ pub enum Command {
     Show {
         /// `collection:sequence` reference (e.g. `dragon:7`) or a stable
         /// artifact `id`
-        reference: ShowTarget,
+        reference: ArtifactTarget,
         /// Emit a deterministic JSON object instead of the raw artifact
         #[arg(long)]
         json: bool,
@@ -52,6 +52,18 @@ pub enum Command {
         /// human-readable lines
         #[arg(long)]
         json: bool,
+    },
+    /// Close an open artifact, moving it into its closed lifecycle state
+    Close {
+        /// `collection:sequence` reference (e.g. `dragon:7`) or a stable
+        /// artifact `id`
+        reference: ArtifactTarget,
+    },
+    /// Reopen a closed artifact, moving it back into its open lifecycle state
+    Reopen {
+        /// `collection:sequence` reference (e.g. `dragon:7`) or a stable
+        /// artifact `id`
+        reference: ArtifactTarget,
     },
 }
 
@@ -135,39 +147,40 @@ impl fmt::Display for ArtifactRef {
     }
 }
 
-/// What `strata show` was asked to resolve.
+/// An artifact named on the command line, as `show`, `close`, and `reopen`
+/// accept it.
 ///
 /// A reference containing `:` is a human [`ArtifactRef`] and must parse as
 /// one; anything else is a stable opaque identity, passed through verbatim.
 /// IDs are opaque strings — nothing here may assume ULID structure — so the
 /// only invalid bare reference is an empty one.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ShowTarget {
+pub enum ArtifactTarget {
     Reference(ArtifactRef),
     Id(String),
 }
 
-impl FromStr for ShowTarget {
+impl FromStr for ArtifactTarget {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s.contains(':') {
-            return s.parse::<ArtifactRef>().map(ShowTarget::Reference);
+            return s.parse::<ArtifactRef>().map(ArtifactTarget::Reference);
         }
         if s.is_empty() {
             return Err("empty artifact reference; expected `collection:sequence` \
                  (e.g. `dragon:7`) or a stable artifact `id`"
                 .into());
         }
-        Ok(ShowTarget::Id(s.to_string()))
+        Ok(ArtifactTarget::Id(s.to_string()))
     }
 }
 
-impl fmt::Display for ShowTarget {
+impl fmt::Display for ArtifactTarget {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ShowTarget::Reference(reference) => reference.fmt(f),
-            ShowTarget::Id(id) => f.write_str(id),
+            ArtifactTarget::Reference(reference) => reference.fmt(f),
+            ArtifactTarget::Id(id) => f.write_str(id),
         }
     }
 }
@@ -232,8 +245,8 @@ mod tests {
     #[test]
     fn show_target_parses_human_references_and_opaque_ids() {
         assert_eq!(
-            "dragon:7".parse::<ShowTarget>(),
-            Ok(ShowTarget::Reference(ArtifactRef {
+            "dragon:7".parse::<ArtifactTarget>(),
+            Ok(ArtifactTarget::Reference(ArtifactRef {
                 collection: Collection::Dragon,
                 sequence: 7,
             }))
@@ -242,17 +255,20 @@ mod tests {
             "drg_01K0P6W5PK8T19H7M2V8W6YQ4C",
             "drg-bootstrap-branch-collisions",
         ] {
-            assert_eq!(id.parse::<ShowTarget>(), Ok(ShowTarget::Id(id.into())));
+            assert_eq!(
+                id.parse::<ArtifactTarget>(),
+                Ok(ArtifactTarget::Id(id.into()))
+            );
         }
     }
 
     #[test]
     fn show_target_rejects_invalid_human_references_and_empty_ids() {
-        let err = "dragon:seven".parse::<ShowTarget>().unwrap_err();
+        let err = "dragon:seven".parse::<ArtifactTarget>().unwrap_err();
         assert!(err.contains("positive integer"), "{err}");
-        let err = "widget:1".parse::<ShowTarget>().unwrap_err();
+        let err = "widget:1".parse::<ArtifactTarget>().unwrap_err();
         assert!(err.contains("widget"), "{err}");
-        let err = "".parse::<ShowTarget>().unwrap_err();
+        let err = "".parse::<ArtifactTarget>().unwrap_err();
         assert!(err.contains("empty artifact reference"), "{err}");
     }
 

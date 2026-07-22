@@ -86,6 +86,31 @@ pub enum Error {
          repair the files by hand, then re-run `strata doctor`"
     )]
     UnhealthyRepository { problems: usize },
+
+    /// A lifecycle transition committed its status rewrite, failed to file
+    /// the artifact into its new directory, and the rollback also failed —
+    /// the doubly-degraded case of decision 8, leaving the status/placement
+    /// mismatch the message names.
+    #[error(
+        "transition of `{path}` was interrupted: the front matter now \
+         declares `status: {status}` but the file still sits in \
+         `{placement}`; renaming failed ({rename_error}) and rolling the \
+         status back also failed ({rollback_error}); the front matter is \
+         authoritative — complete the transition by moving the file to \
+         `{destination}`, then run `strata doctor` to confirm repository \
+         health"
+    )]
+    TransitionInterrupted {
+        path: PathBuf,
+        /// The committed front-matter status.
+        status: &'static str,
+        /// Repository-relative directory the file still sits in.
+        placement: &'static str,
+        /// Repository-relative path that completes the transition.
+        destination: String,
+        rename_error: io::Error,
+        rollback_error: io::Error,
+    },
 }
 
 impl Error {
@@ -100,6 +125,7 @@ impl Error {
             Error::ArtifactNotFound { .. } => "artifact-not-found",
             Error::AmbiguousReference { .. } => "ambiguous-reference",
             Error::UnhealthyRepository { .. } => "unhealthy-repository",
+            Error::TransitionInterrupted { .. } => "transition-interrupted",
         }
     }
 
@@ -116,6 +142,8 @@ impl Error {
     /// - 7: artifact not found
     /// - 8: ambiguous reference
     /// - 9: unhealthy repository (`doctor` found validation problems)
+    /// - 10: transition interrupted (status committed, filing and rollback
+    ///   both failed; the repository holds a diagnosable mismatch)
     pub fn exit_code(&self) -> u8 {
         match self {
             Error::InvalidInvocation { .. } => 2,
@@ -126,6 +154,7 @@ impl Error {
             Error::ArtifactNotFound { .. } => 7,
             Error::AmbiguousReference { .. } => 8,
             Error::UnhealthyRepository { .. } => 9,
+            Error::TransitionInterrupted { .. } => 10,
         }
     }
 
@@ -172,6 +201,14 @@ mod tests {
                 ],
             },
             Error::UnhealthyRepository { problems: 3 },
+            Error::TransitionInterrupted {
+                path: PathBuf::from("archaeology/dragons/open/0004-w.md"),
+                status: "closed",
+                placement: "archaeology/dragons/open",
+                destination: "archaeology/dragons/closed/0004-w.md".into(),
+                rename_error: io::Error::new(io::ErrorKind::PermissionDenied, "denied"),
+                rollback_error: io::Error::new(io::ErrorKind::PermissionDenied, "denied"),
+            },
         ]
     }
 
@@ -199,6 +236,7 @@ mod tests {
             ("artifact-not-found", 7),
             ("ambiguous-reference", 8),
             ("unhealthy-repository", 9),
+            ("transition-interrupted", 10),
         ];
         for error in one_of_each() {
             let want = expected
@@ -237,7 +275,8 @@ mod tests {
                 }
                 | Error::ArtifactConflict { path, .. }
                 | Error::MalformedArtifact { path, .. }
-                | Error::Filesystem { path, .. } => {
+                | Error::Filesystem { path, .. }
+                | Error::TransitionInterrupted { path, .. } => {
                     assert!(
                         message.contains(&path.display().to_string()),
                         "message must name `{}`: {message}",
