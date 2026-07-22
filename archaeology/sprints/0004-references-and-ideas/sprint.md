@@ -2,8 +2,9 @@
 id: spr-references-and-ideas
 sequence: 4
 kind: sprint
-status: active
+status: closed
 created: 2026-07-22
+closed: 2026-07-22
 ---
 
 # Sprint 4: References and the ideas collection
@@ -88,3 +89,46 @@ The sprint must deliver:
   where a task in this sprint already touches an artifact.
 - Comment threads (idea 11), frontier projection (idea 8), cross-sprint
   dependency enforcement (idea 14), relevance surfacing (idea 12).
+
+## Retrospective (2026-07-22)
+
+All four tasks closed in one day; every success criterion holds.
+Decision 10 ([[dec-reference-syntax|reference syntax]]) fixed wikilink
+markers and the terminal-provenance vocabulary, closing dragon 3
+through the tool. Ideas are the second managed collection — the
+sixteen hand-seeded specimens listed, shown, and transitioned without
+a byte of identity rewriting. The corpus carries its first three
+verified typed edges, `doctor` gained the decision's severity tiers,
+and fortune now resurfaces parked ideas (dogfooded immediately:
+consecutive draws surfaced five different ideas).
+
+Durable learnings, recorded where they belong:
+
+- The rule-of-three bet inverted: the second collection produced
+  almost no duplication. The byte-machinery was already
+  collection-agnostic, and the residue compressed into a plain-data
+  descriptor (kind, lifecycle map, transition table) that is the
+  strongest evidence yet for idea 10's spec shape — while creation
+  templates and command verbs stayed irreducibly per-collection
+  (task 14 result).
+- Provenance direction generalized cleanly: terminal lifecycle states
+  carry the edge to the work that terminated them, one rule
+  instantiated twice (decision 10; task 15).
+- The decision's severity tiers forced `doctor` to grow an advice
+  channel; "legal but weak" now has an exit-0 rendering and a `--json`
+  field instead of being unrepresentable (task 15 result).
+- Wikilink over Markdown-link was decided by where each fails the
+  no-tooling test: GitHub's scheme allowlist makes `[label](strata:id)`
+  vanish at render time, while `[[...]]` is noisy but never hides the
+  reference (decision 10; task 13 result).
+
+Friction to fix next: sprint and task closure is *still*
+hand-performed archaeology — this closure again edits the sprint file
+and four task files by hand while `strata` watches, and sprints and
+tasks remain the largest unmanaged collections. The collection
+descriptor from task 14 lowers the cost of managing them, but tasks
+nest under per-sprint directories, which the current
+one-directory-per-state model cannot express; that layout question is
+the real blocker and belongs to whatever sprint takes them on. The
+`strata close --resolved-by` observation from decision 10 (letting
+provenance ride the transition) is the natural companion piece.
