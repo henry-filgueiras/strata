@@ -165,32 +165,27 @@ Until Strata can manage its own records, maintain:
 archaeology/
 ├── decisions/
 ├── dragons/
-│   ├── open/
-│   └── closed/
 ├── ideas/
-│   ├── parked/
-│   ├── adopted/
-│   └── rejected/
 ├── logs/
 └── sprints/
-    └── NNNN-name/
+    └── NNNN-name/        # containment, not lifecycle
         ├── sprint.md
-        ├── pending/
-        └── closed/
+        └── NNNN-task.md ...
 ```
 
 Conventions:
 
+- placement is flat per decision 11: all artifacts of a collection live
+  directly in its directory, lifecycle state is carried only in front
+  matter, and state changes never move files; per-sprint directories
+  are pure containment;
 - use four-digit zero-padded display sequences;
 - use lowercase kebab-case filenames;
-- lifecycle metadata must agree with placement: an artifact's `status`
-  equals the name of its lifecycle directory (`closed/` holds
-  `status: closed`, `parked/` holds `status: parked`, and so on);
-- lifecycle directories are created on first use; do not pre-create empty
-  ones, since Git cannot track them (see dragon 2);
+- do not pre-create empty containment directories, since Git cannot
+  track them (see dragon 2); `new sprint` creates them on first use;
 - do not reuse deleted or moved sequence numbers;
 - do not renumber existing artifacts cosmetically;
-- prefer moving records to terminal states over deleting history;
+- prefer transitioning records to terminal states over deleting history;
 - keep generated artifacts clearly distinguishable from canonical sources;
 - cross-references in new writing use wikilink markers per decision 10:
   bound `[[stable-id|label]]` in prose, unbound sugar `[[kind:N]]`
@@ -205,7 +200,7 @@ dependency edge may target one, and rejecting or abandoning an idea must
 invalidate nothing canonical. Ideas may freely reference dragons,
 decisions, and prior art as motivating evidence, and a decision that
 adopts an idea may cite it as provenance. Idea lifecycle is `parked` to
-`adopted` or `rejected`; terminal ideas are moved, never deleted.
+`adopted` or `rejected`; terminal ideas are transitioned, never deleted.
 
 ## Archaeology workflow
 
@@ -229,7 +224,7 @@ Before finishing:
 
 1. Run formatting, linting, and tests using `scripts/check.sh`.
 2. Update the relevant work item with its result.
-3. Move completed work from `pending` to `closed`.
+3. Transition completed work items to `closed`.
 4. Record unresolved findings as dragons.
 5. Record durable architectural conclusions as decisions.
 6. Check that paths, metadata, and references remain consistent.

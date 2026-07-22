@@ -2,9 +2,10 @@
 id: tsk-placement-model-decision
 sequence: 17
 kind: task
-status: pending
+status: closed
 sprint: spr-placement-and-sprints
 created: 2026-07-22
+closed: 2026-07-22
 ---
 
 # Decide one placement model for all collections
@@ -45,3 +46,29 @@ status quo recorded as rejected alternatives.
   convention where it no longer applies.
 - No code changes in this task; migration and code alignment are
   task 18.
+
+## Result
+
+Decision 11 ([[dec-flat-placement|flat placement]]) is recorded and
+accepted: all artifacts of a collection live directly in its
+directory, front matter is the sole lifecycle authority, state changes
+never move files, and per-sprint directories are re-founded as pure
+containment. The decision retires the decision 8 two-step transition
+contract (transitions become one safe write), retires `doctor`'s
+status/placement agreement check in favor of two error-tier
+successors (no strays outside collection directories; task `sprint:`
+fields must match containment), confirms decision 2's identity and
+sequence rules untouched, and records the accepted cost with idea 18
+as the parked counter-lever. All three alternatives are recorded with
+reasons, the strongest being the observed one: decisions have been
+flat since sprint 1 with zero felt pain.
+
+CLAUDE.md's layout tree and conventions are updated to match; the
+status-equals-directory-name and lifecycle-directories-on-first-use
+conventions are retired. This task file itself is closed under the old
+convention — moved to `closed/` — as the last artifact to ever do so;
+task 18's migration sweeps it flat along with everything else.
+
+Raw-diff readability (decision 7): the decision is one Markdown file
+of prose and one fenced tree diagram; nothing in it requires tooling
+to render.
