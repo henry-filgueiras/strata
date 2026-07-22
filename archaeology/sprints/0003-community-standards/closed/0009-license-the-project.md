@@ -2,9 +2,10 @@
 id: tsk-license-the-project
 sequence: 9
 kind: task
-status: pending
+status: closed
 sprint: spr-community-standards
 created: 2026-07-22
+closed: 2026-07-22
 ---
 
 # License the project under MIT OR Apache-2.0
@@ -26,3 +27,21 @@ state before any external contribution arrives.
   way unless explicitly stated otherwise.
 - `scripts/check.sh` passes (the `Cargo.toml` edit must not disturb the
   build).
+
+## Result
+
+Dual-licensed per decision 9 (`dec-dual-mit-apache-licensing`).
+`LICENSE-MIT` carries the MIT text with "Copyright (c) 2026 Henry
+Filgueiras"; `LICENSE-APACHE` is the canonical text downloaded from
+apache.org rather than reproduced by hand — its sha256
+(`cfc7749b96f6…`) matches the well-known canonical hash. `Cargo.toml`
+gained `license`, and opportunistically `description` and `repository`,
+since the description doubles as the suggested GitHub repository
+description in task 12. The README License section uses the
+ecosystem-standard wording including the inbound dual-licensing clause.
+
+## Verification
+
+`scripts/check.sh` clean (fmt, tests, clippy). `cargo metadata` parses
+the new package fields. License texts verified against canonical
+sources, not regenerated.
