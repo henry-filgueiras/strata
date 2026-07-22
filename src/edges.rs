@@ -239,16 +239,28 @@ fn check_marker(
     }
 }
 
-/// Best-effort harvest of every front-matter `id` (mapped to its `kind`)
-/// in the archaeology tree, managed or not.
+/// One artifact harvested from the archaeology tree, managed or not:
+/// enough identity to serve as a typed-edge target.
+#[derive(Debug, Clone)]
+pub(crate) struct Harvested {
+    pub id: String,
+    pub kind: String,
+    pub sequence: Option<u32>,
+    pub title: Option<String>,
+    /// Repository-relative path with `/` separators, for error messages.
+    pub path: String,
+}
+
+/// Best-effort harvest of every front-matter-bearing artifact in the
+/// archaeology tree, managed or not.
 ///
 /// Files without parseable front matter, non-Markdown files, and dot
-/// entries are skipped silently: the universe answers "does this id
-/// exist", not "is this file valid". Traversal is sorted so duplicate ids
-/// resolve to the same first-seen kind deterministically; duplicate ids
-/// among managed artifacts are separately real findings.
-pub(crate) fn harvest_ids(root: &Path) -> BTreeMap<String, String> {
-    let mut universe = BTreeMap::new();
+/// entries are skipped silently: the harvest answers "what could this
+/// reference resolve to", not "is this file valid". Traversal is sorted
+/// so duplicates surface deterministically; duplicate ids among managed
+/// artifacts are separately real findings.
+pub(crate) fn harvest(root: &Path) -> Vec<Harvested> {
+    let mut harvested = Vec::new();
     let mut stack = vec![root.join("archaeology")];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = fs::read_dir(&dir) else {
@@ -271,7 +283,7 @@ pub(crate) fn harvest_ids(root: &Path) -> BTreeMap<String, String> {
             let Ok(content) = fs::read_to_string(&path) else {
                 continue;
             };
-            let Some((front_matter, _)) = crate::read::split_front_matter(&content) else {
+            let Some((front_matter, body)) = crate::read::split_front_matter(&content) else {
                 continue;
             };
             let Ok(mapping) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(front_matter) else {
@@ -281,11 +293,32 @@ pub(crate) fn harvest_ids(root: &Path) -> BTreeMap<String, String> {
                 mapping.get("id").and_then(|v| v.as_str()),
                 mapping.get("kind").and_then(|v| v.as_str()),
             ) {
-                universe
-                    .entry(id.to_string())
-                    .or_insert_with(|| kind.to_string());
+                harvested.push(Harvested {
+                    id: id.to_string(),
+                    kind: kind.to_string(),
+                    sequence: mapping
+                        .get("sequence")
+                        .and_then(|v| v.as_u64())
+                        .and_then(|v| u32::try_from(v).ok()),
+                    title: crate::read::extract_title(body).ok(),
+                    path: path
+                        .strip_prefix(root)
+                        .unwrap_or(&path)
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                });
             }
         }
+    }
+    harvested
+}
+
+/// The typed-edge verification universe: every harvested id mapped to its
+/// kind, first-seen deterministically.
+pub(crate) fn harvest_ids(root: &Path) -> BTreeMap<String, String> {
+    let mut universe = BTreeMap::new();
+    for artifact in harvest(root) {
+        universe.entry(artifact.id).or_insert(artifact.kind);
     }
     universe
 }

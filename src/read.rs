@@ -640,7 +640,7 @@ pub(crate) fn split_front_matter(content: &str) -> Option<(&str, &str)> {
 /// Exactly one `# Title` line must exist outside fenced code blocks; a
 /// missing, empty, or duplicated title is an error described for the
 /// `malformed-artifact` reason.
-fn extract_title(body: &str) -> Result<String, String> {
+pub(crate) fn extract_title(body: &str) -> Result<String, String> {
     let mut title: Option<&str> = None;
     let mut in_fence = false;
     for line in body.lines() {

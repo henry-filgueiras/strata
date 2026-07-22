@@ -62,6 +62,11 @@ pub enum Command {
         /// `dragon:sequence`, `sprint:sequence`, or `task:sequence`
         /// reference, or a stable artifact `id`
         reference: ArtifactTarget,
+        /// Dragons only: record what resolved the dragon (`decision:N`,
+        /// `task:N`, or a stable id) as a `resolved-by` edge in the same
+        /// write
+        #[arg(long)]
+        resolved_by: Option<String>,
     },
     /// Reopen a closed dragon
     Reopen {
@@ -74,6 +79,10 @@ pub enum Command {
         /// `idea:sequence` reference (e.g. `idea:12`) or a stable
         /// artifact `id`
         reference: ArtifactTarget,
+        /// Record what adopted the idea (`decision:N`, `task:N`, or a
+        /// stable id) as an `adopted-by` edge in the same write
+        #[arg(long)]
+        adopted_by: Option<String>,
     },
     /// Reject a parked idea into its terminal rejected state
     Reject {

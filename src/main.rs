@@ -30,9 +30,15 @@ fn run(command: &Command) -> Result<(), Error> {
         } => list(*collection, *json, *active),
         Command::Show { reference, json } => show(reference, *json),
         Command::Doctor { json } => doctor(*json),
-        Command::Close { reference } => close(reference),
+        Command::Close {
+            reference,
+            resolved_by,
+        } => close(reference, resolved_by.as_deref()),
         Command::Reopen { reference } => transition(reference, Collection::Dragon, Status::Open),
-        Command::Adopt { reference } => transition(reference, Collection::Idea, Status::Adopted),
+        Command::Adopt {
+            reference,
+            adopted_by,
+        } => adopt(reference, adopted_by.as_deref()),
         Command::Reject { reference } => transition(reference, Collection::Idea, Status::Rejected),
         Command::Fortune => fortune(),
     }
@@ -101,10 +107,38 @@ fn transition(target: &ArtifactTarget, collection: Collection, to: Status) -> Re
     Ok(())
 }
 
+/// `strata adopt`: an idea transition that may carry its `adopted-by`
+/// provenance in the same invocation.
+fn adopt(target: &ArtifactTarget, adopted_by: Option<&str>) -> Result<(), Error> {
+    if let ArtifactTarget::Reference(reference) = target
+        && reference.collection != Collection::Idea
+    {
+        return Err(Error::InvalidInvocation {
+            message: format!(
+                "`{target}` is a {} reference; {}",
+                reference.collection,
+                verb_guidance(reference.collection)
+            ),
+        });
+    }
+    let root = repo::discover(&cwd()?)?;
+    let done = transition::transition_with_provenance(
+        &root,
+        &read::IDEA,
+        selector(target),
+        &target.to_string(),
+        Status::Adopted,
+        adopted_by.map(|raw| ("adopted-by", raw)),
+    )?;
+    render_transition(&done);
+    Ok(())
+}
+
 /// `strata close`: dragons and sprints share the verb, so the reference's
 /// collection picks the lifecycle; a bare stable id resolves over the
-/// union of the closable collections.
-fn close(target: &ArtifactTarget) -> Result<(), Error> {
+/// union of the closable collections. `--resolved-by` records dragon
+/// resolution provenance and belongs to no other collection's vocabulary.
+fn close(target: &ArtifactTarget, resolved_by: Option<&str>) -> Result<(), Error> {
     let root = repo::discover(&cwd()?)?;
     let collection = match target {
         ArtifactTarget::Reference(reference) => reference.collection,
@@ -120,13 +154,23 @@ fn close(target: &ArtifactTarget) -> Result<(), Error> {
             }
         }
     };
+    if resolved_by.is_some() && collection != Collection::Dragon {
+        return Err(Error::InvalidInvocation {
+            message: format!(
+                "`--resolved-by` records dragon resolution provenance; the \
+                 decided vocabulary has no such edge for {}s",
+                collection.name()
+            ),
+        });
+    }
     let done = match collection {
-        Collection::Dragon => transition::transition(
+        Collection::Dragon => transition::transition_with_provenance(
             &root,
             &read::DRAGON,
             selector(target),
             &target.to_string(),
             Status::Closed,
+            resolved_by.map(|raw| ("resolved-by", raw)),
         )?,
         Collection::Sprint => {
             transition::close_sprint(&root, selector(target), &target.to_string())?

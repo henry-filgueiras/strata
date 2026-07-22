@@ -50,9 +50,98 @@ pub fn transition(
     display: &str,
     to: Status,
 ) -> Result<Transition, Error> {
+    transition_with_provenance(root, collection, target, display, to, None)
+}
+
+/// Transition one artifact and, when `edge` is given, write the named
+/// provenance edge in the same atomic write: no transition without its
+/// edge, no edge without its transition.
+///
+/// `edge` is `(front-matter key, raw target)`; the raw target may be a
+/// stable id or a `kind:N` sequence reference, and is resolved to a bound
+/// marker — stable id plus the target's title as the frozen label — at
+/// write time, per decision 10.
+pub fn transition_with_provenance(
+    root: &Path,
+    collection: &Collection,
+    target: Selector<'_>,
+    display: &str,
+    to: Status,
+    edge: Option<(&'static str, &str)>,
+) -> Result<Transition, Error> {
     let artifacts = read::scan_collection(root, collection)?;
     let artifact = read::resolve(&artifacts, target, display)?;
-    perform(root, collection, artifact, to)
+    let edge_line = edge
+        .map(|(key, raw)| resolve_edge(root, key, raw))
+        .transpose()?;
+    perform_with_edge(root, collection, artifact, to, edge_line)
+}
+
+/// Resolve one provenance-flag target to its front-matter line.
+fn resolve_edge(root: &Path, key: &'static str, raw: &str) -> Result<(String, String), Error> {
+    let kind = crate::edges::EDGE_KINDS
+        .iter()
+        .find(|kind| kind.key == key)
+        .expect("provenance flags only carry decided edge keys");
+    let harvested = crate::edges::harvest(root);
+    let target = if let Some((target_kind, sequence)) = raw.split_once(':') {
+        let sequence: u32 = sequence.parse().map_err(|_| Error::InvalidInvocation {
+            message: format!(
+                "invalid sequence in `--{key} {raw}`; expected `kind:N` or a \
+                 stable artifact id"
+            ),
+        })?;
+        let matches: Vec<&crate::edges::Harvested> = harvested
+            .iter()
+            .filter(|artifact| artifact.kind == target_kind && artifact.sequence == Some(sequence))
+            .collect();
+        match matches.as_slice() {
+            [] => {
+                return Err(Error::ArtifactNotFound {
+                    reference: raw.to_string(),
+                });
+            }
+            [only] => (*only).clone(),
+            several => {
+                return Err(Error::AmbiguousReference {
+                    reference: raw.to_string(),
+                    candidates: several
+                        .iter()
+                        .map(|artifact| artifact.path.clone())
+                        .collect(),
+                });
+            }
+        }
+    } else {
+        harvested
+            .iter()
+            .find(|artifact| artifact.id == raw)
+            .cloned()
+            .ok_or_else(|| Error::ArtifactNotFound {
+                reference: raw.to_string(),
+            })?
+    };
+    if !kind.target_kinds.contains(&target.kind.as_str()) {
+        return Err(Error::InvalidInvocation {
+            message: format!(
+                "`--{key}` targets `{}`, a {}; legal targets are: {}",
+                target.id,
+                target.kind,
+                kind.target_kinds.join(", ")
+            ),
+        });
+    }
+    let Some(title) = target.title else {
+        return Err(Error::MalformedArtifact {
+            path: root.join(&target.path),
+            reason: format!(
+                "cannot freeze a label for `--{key} {raw}`: the target has \
+                 no readable title heading"
+            ),
+        });
+    };
+    let label = title.replace('\\', "\\\\").replace('"', "\\\"");
+    Ok((key.to_string(), format!("\"[[{}|{label}]]\"", target.id)))
 }
 
 /// Close one sprint, refusing while it still has pending tasks.
@@ -91,6 +180,18 @@ pub(crate) fn perform(
     artifact: &Artifact,
     to: Status,
 ) -> Result<Transition, Error> {
+    perform_with_edge(root, collection, artifact, to, None)
+}
+
+/// Perform the transition of one resolved artifact, optionally writing a
+/// resolved provenance edge line in the same write.
+pub(crate) fn perform_with_edge(
+    root: &Path,
+    collection: &Collection,
+    artifact: &Artifact,
+    to: Status,
+    edge_line: Option<(String, String)>,
+) -> Result<Transition, Error> {
     let from = artifact.summary.status;
     let reference = artifact.summary.reference();
     let path_rel = &artifact.summary.path;
@@ -126,6 +227,14 @@ pub(crate) fn perform(
                 path: path.clone(),
                 reason,
             })?;
+    }
+    if let Some((key, value)) = edge_line {
+        rewritten = insert_after_created(&rewritten, &key, &value).map_err(|reason| {
+            Error::MalformedArtifact {
+                path: path.clone(),
+                reason,
+            }
+        })?;
     }
 
     replace(&path, &rewritten).map_err(|source| Error::Filesystem {
@@ -244,6 +353,43 @@ fn stamp_closed(content: &str, date: &str) -> Result<String, String> {
          file by hand"
             .to_string(),
     )
+}
+
+/// Insert `key: value` after the front-matter `created:` line, refusing
+/// when the key is already present: an existing edge is authored history
+/// the command must not silently rewrite.
+fn insert_after_created(content: &str, key: &str, value: &str) -> Result<String, String> {
+    let (fm_start, fm_end) =
+        front_matter_region(content).ok_or_else(|| "missing front matter".to_string())?;
+    let front_matter = &content[fm_start..fm_end];
+    if front_matter.lines().any(|line| {
+        line.strip_prefix(key)
+            .is_some_and(|rest| rest.starts_with(':'))
+    }) {
+        return Err(format!(
+            "the front matter already carries a `{key}` edge; edit the file \
+             by hand to change recorded provenance"
+        ));
+    }
+    let mut offset = 0;
+    for line in front_matter.split_inclusive('\n') {
+        offset += line.len();
+        if line.starts_with("created:") {
+            let insert_at = fm_start + offset;
+            let mut inserted = String::with_capacity(content.len() + key.len() + value.len() + 3);
+            inserted.push_str(&content[..insert_at]);
+            inserted.push_str(key);
+            inserted.push_str(": ");
+            inserted.push_str(value);
+            inserted.push('\n');
+            inserted.push_str(&content[insert_at..]);
+            return Ok(inserted);
+        }
+    }
+    Err(format!(
+        "no front-matter `created:` line to place the `{key}` edge after; \
+         edit the file by hand"
+    ))
 }
 
 /// Byte range of the front-matter block body, mirroring the read pipeline's
