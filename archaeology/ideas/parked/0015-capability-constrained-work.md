@@ -63,3 +63,16 @@ scheduler matching on containment — including the same trust model,
 since a runner's labels are asserted, not verified. Issue-tracker
 labels (`help wanted`, `good first issue`) are the advisory,
 human-facing ancestor.
+
+## Field note (2026-07-22)
+
+Task 12's own closure sharpened the model: the task was framed
+human-only, yet an authenticated `gh` session set the repository
+topics through the API, the withdrawn criterion showed an agent
+confidently writing directions for a UI it could not see, and only the
+web-only settings plus one owner judgment (the CoC contact) proved
+genuinely human. Both errors point the same way: affordances should be
+declared per required interface (`github-api` vs `github-web-ui` vs
+owner judgment), not per executor species, and a task's affordance
+claims are themselves fallible statements an executor may refute in
+its result.

@@ -2,9 +2,10 @@
 id: tsk-github-community-settings
 sequence: 12
 kind: task
-status: pending
+status: closed
 sprint: spr-community-standards
 created: 2026-07-22
+closed: 2026-07-22
 ---
 
 # Flip the settings-only community checklist items
@@ -52,3 +53,42 @@ observation).
   description) and the community-standards checklist shows every
   applicable item green. Remaining before closure: the CoC enforcement
   contact ratification.
+
+## Result
+
+All applicable criteria met; the community-standards checklist shows
+every item green.
+
+- Repository description: set by the owner via the web UI, matching
+  the `Cargo.toml` description.
+- Content reports: withdrawn as organization-only (see amendment).
+- CoC enforcement contact: ratified by the owner as the plus-addressed
+  `zerolimit+coc@gmail.com` for inbox classification;
+  `CODE_OF_CONDUCT.md` updated accordingly.
+- Repository topics (owner-delegated addition to this task's scope,
+  for organic discoverability): set by the agent through the GitHub
+  API rather than the web UI, exactly as:
+
+  ```sh
+  gh repo edit henry-filgueiras/strata \
+    --add-topic rust --add-topic cli --add-topic developer-tools \
+    --add-topic knowledge-management \
+    --add-topic architecture-decision-records --add-topic adr \
+    --add-topic decision-records --add-topic markdown --add-topic git \
+    --add-topic documentation --add-topic ai-agents \
+    --add-topic agent-memory
+  ```
+
+Executor-gap postscript: the task was framed human-only, but most of
+it was API-reachable — an authenticated `gh` session covers
+description and topics, leaving only web-only settings and owner
+judgment (the contact ratification) genuinely human. Capabilities
+attach to sessions and credentials, not species; recorded as a field
+note on idea 15.
+
+## Verification
+
+`gh repo view --json repositoryTopics` returns all twelve topics; the
+community-standards page shows every item green (owner-verified);
+`git grep` confirms the plus-addressed contact is the only email in
+`CODE_OF_CONDUCT.md`.
