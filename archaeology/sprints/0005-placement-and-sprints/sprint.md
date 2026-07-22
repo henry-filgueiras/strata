@@ -2,8 +2,9 @@
 id: spr-placement-and-sprints
 sequence: 5
 kind: sprint
-status: active
+status: closed
 created: 2026-07-22
+closed: 2026-07-22
 ---
 
 # Sprint 5: One placement model and managed sprints
@@ -117,3 +118,47 @@ The sprint must deliver:
   (idea 13).
 - Bulk migration of historical prose references: unchanged policy from
   decision 10 — retrofits only where a task already rewrites the file.
+
+## Retrospective (2026-07-22)
+
+All five tasks closed in one day; every success criterion holds.
+Decision 11 ([[dec-flat-placement|flat placement]]) ended the
+three-way placement inconsistency, the corpus crossed over with
+`git mv` and zero identity rewrites, sprints and tasks became the
+third and fourth managed collections, and provenance now rides
+`close` and `adopt`. `doctor` validates 49 artifacts — every dragon,
+idea, sprint, and task in the repository — and is green.
+
+Durable learnings, recorded where they belong:
+
+- Flat placement was a *deletion* job: the two-step transition
+  contract, its rollback machinery, the fault-injection trait, the
+  `transition-interrupted` error (exit code 10, retired unreused),
+  and doctor's status/placement check all fell out rather than being
+  rewritten (task 18 result). Retiring a failure class beats
+  policing it.
+- The idea 10 verdict after four collections: the descriptor stays
+  plain data (kind, dir, states, transitions, one behavior flag),
+  but layout scanners, creation, and the new cross-collection guards
+  (sprint closure consults tasks; task validity consults sprints)
+  refused to be data. The spec engine, when extracted, is a data
+  spec plus a small set of behavior escape hatches — exactly the
+  seam idea 10 reserved (task 20 result).
+- Provenance binding and doctor verification now share one harvest,
+  so write-time and check-time resolution cannot drift (task 21
+  result).
+- Dogfood milestone: tasks 20 and 21 and this sprint itself were
+  closed by `strata`, ending the hand-performed closure ceremony
+  this sprint existed to eliminate. Authoring Results and
+  retrospectives remains human-and-agent writing, as it should.
+
+Friction to fix next: this sprint's own five tasks were hand-minted
+(they predate `strata new task` by hours) — sprint 6 should be the
+first whose artifacts are tool-minted end to end, closing the loop
+completely. Committing is still ceremony performed beside the tool
+(idea 9, single-invocation commits, now has a much richer command
+surface to ride). And the spec-engine extraction (idea 10) now has
+its rule-of-three evidence complete: sprint 6 is its natural home if
+a fifth collection (logs? decisions?) is worth managing — decisions
+especially, since `adopt --adopted-by decision:N` just made them the
+most-referenced unmanaged kind.
