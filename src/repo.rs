@@ -28,6 +28,15 @@ pub const DRAGONS_DIR: &str = "archaeology/dragons";
 /// lifecycle state (decision 11: placement is flat).
 pub const IDEAS_DIR: &str = "archaeology/ideas";
 
+/// Root-relative directory holding one containment directory per sprint.
+/// Containment is not lifecycle (decision 11): a sprint's directory never
+/// changes over its life, and its tasks file inside it.
+pub const SPRINTS_DIR: &str = "archaeology/sprints";
+
+/// The fixed filename of a sprint's own artifact inside its containment
+/// directory.
+pub const SPRINT_FILE: &str = "sprint.md";
+
 /// Directories every bootstrap repository must contain. The ideas
 /// directory is deliberately absent: it is created on first use, the
 /// convention adopted after dragon 2 showed Git drops empty directories.

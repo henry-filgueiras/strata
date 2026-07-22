@@ -55,6 +55,35 @@ pub fn transition(
     perform(root, collection, artifact, to)
 }
 
+/// Close one sprint, refusing while it still has pending tasks.
+///
+/// The refusal names each pending task, because the caller's next move is
+/// to close or reassign them; an empty sprint closes like any other
+/// artifact, stamping its `closed:` date.
+pub fn close_sprint(root: &Path, target: Selector<'_>, display: &str) -> Result<Transition, Error> {
+    let sprints = read::scan_sprints(root)?;
+    let sprint = read::resolve(&sprints, target, display)?;
+    let pending: Vec<String> = read::scan_tasks(root)?
+        .iter()
+        .filter(|task| {
+            task.summary.status == Status::Pending
+                && task.summary.sprint.as_deref() == Some(sprint.summary.id.as_str())
+        })
+        .map(|task| format!("{} ({})", task.summary.reference(), task.summary.title))
+        .collect();
+    if !pending.is_empty() {
+        return Err(Error::InvalidInvocation {
+            message: format!(
+                "`{}` still has {} pending task(s): {}; close them first",
+                sprint.summary.reference(),
+                pending.len(),
+                pending.join(", ")
+            ),
+        });
+    }
+    perform(root, &read::SPRINT, sprint, Status::Closed)
+}
+
 /// Perform the transition of one resolved artifact.
 pub(crate) fn perform(
     root: &Path,
@@ -85,11 +114,19 @@ pub(crate) fn perform(
     }
 
     let path = root.join(path_rel);
-    let rewritten =
+    let mut rewritten =
         rewrite_status(&artifact.content, from, to).map_err(|reason| Error::MalformedArtifact {
             path: path.clone(),
             reason,
         })?;
+    if to == Status::Closed && collection.stamp_closed {
+        let today = jiff::Zoned::now().strftime("%Y-%m-%d").to_string();
+        rewritten =
+            stamp_closed(&rewritten, &today).map_err(|reason| Error::MalformedArtifact {
+                path: path.clone(),
+                reason,
+            })?;
+    }
 
     replace(&path, &rewritten).map_err(|source| Error::Filesystem {
         operation: "rewrite front-matter status".into(),
@@ -176,6 +213,37 @@ fn rewrite_status(content: &str, from: Status, to: Status) -> Result<String, Str
     rewritten.push_str(to.name());
     rewritten.push_str(&content[range.end..]);
     Ok(rewritten)
+}
+
+/// Insert a `closed: <date>` line after the front-matter `created:` line,
+/// as part of the same transition write. A `closed:` line already present
+/// (a hand-authored record) is left untouched.
+fn stamp_closed(content: &str, date: &str) -> Result<String, String> {
+    let (fm_start, fm_end) =
+        front_matter_region(content).ok_or_else(|| "missing front matter".to_string())?;
+    let front_matter = &content[fm_start..fm_end];
+    if front_matter.lines().any(|line| line.starts_with("closed:")) {
+        return Ok(content.to_string());
+    }
+    let mut offset = 0;
+    for line in front_matter.split_inclusive('\n') {
+        offset += line.len();
+        if line.starts_with("created:") {
+            let insert_at = fm_start + offset;
+            let mut stamped = String::with_capacity(content.len() + date.len() + 9);
+            stamped.push_str(&content[..insert_at]);
+            stamped.push_str("closed: ");
+            stamped.push_str(date);
+            stamped.push('\n');
+            stamped.push_str(&content[insert_at..]);
+            return Ok(stamped);
+        }
+    }
+    Err(
+        "no front-matter `created:` line to stamp `closed:` after; edit the \
+         file by hand"
+            .to_string(),
+    )
 }
 
 /// Byte range of the front-matter block body, mirroring the read pipeline's
@@ -317,6 +385,69 @@ mod tests {
             "---\nid: idea-settled\nsequence: 1\nkind: idea\nstatus: adopted\ncreated: 2026-07-20\n---\n\n# Settled\n",
             "nothing may change"
         );
+    }
+
+    fn seed_sprint(root: &Path, dir_name: &str, sequence: u32, status: &str) {
+        let dir = root.join(crate::repo::SPRINTS_DIR).join(dir_name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(crate::repo::SPRINT_FILE),
+            format!(
+                "---\nid: spr-{sequence}\nsequence: {sequence}\nkind: sprint\nstatus: {status}\ncreated: 2026-07-20\n---\n\n# Sprint {sequence}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn closing_a_sprint_stamps_the_closed_date() {
+        let tmp = temp_repo();
+        seed_sprint(tmp.path(), "0001-done", 1, "active");
+
+        let done = close_sprint(tmp.path(), Selector::Sequence(1), "sprint:1").unwrap();
+
+        assert_eq!(done.to, Status::Closed);
+        let content = fs::read_to_string(
+            tmp.path()
+                .join(crate::repo::SPRINTS_DIR)
+                .join("0001-done")
+                .join(crate::repo::SPRINT_FILE),
+        )
+        .unwrap();
+        assert!(content.contains("status: closed"), "{content}");
+        assert!(
+            content.contains("\ncreated: 2026-07-20\nclosed: "),
+            "the closed stamp must follow the created line: {content}"
+        );
+    }
+
+    #[test]
+    fn closing_a_sprint_with_pending_tasks_is_refused_naming_them() {
+        let tmp = temp_repo();
+        seed_sprint(tmp.path(), "0001-busy", 1, "active");
+        fs::write(
+            tmp.path()
+                .join(crate::repo::SPRINTS_DIR)
+                .join("0001-busy")
+                .join("0001-unfinished.md"),
+            "---\nid: tsk-unfinished\nsequence: 1\nkind: task\nstatus: pending\nsprint: spr-1\ncreated: 2026-07-20\n---\n\n# Unfinished work\n",
+        )
+        .unwrap();
+
+        let err = close_sprint(tmp.path(), Selector::Sequence(1), "sprint:1").unwrap_err();
+
+        assert!(matches!(err, Error::InvalidInvocation { .. }), "{err:?}");
+        let message = err.to_string();
+        assert!(
+            message.contains("task:1") && message.contains("Unfinished work"),
+            "the refusal must name each pending task: {message}"
+        );
+    }
+
+    #[test]
+    fn stamp_closed_leaves_an_existing_closed_line_untouched() {
+        let content = "---\nid: x\nsequence: 1\nkind: sprint\nstatus: closed\ncreated: 2026-07-20\nclosed: 2026-07-21\n---\n\n# T\n";
+        assert_eq!(stamp_closed(content, "2026-07-22").unwrap(), content);
     }
 
     #[cfg(unix)]

@@ -33,13 +33,20 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use crate::error::Error;
-use crate::read::{Collection, DRAGON, IDEA};
+use crate::read::{Collection, DRAGON, IDEA, SPRINT, Status};
+use crate::repo::{SPRINT_FILE, SPRINTS_DIR};
 
 /// Prefix for generated dragon identities.
 pub const DRAGON_ID_PREFIX: &str = "drg_";
 
 /// Prefix for generated idea identities.
 pub const IDEA_ID_PREFIX: &str = "ide_";
+
+/// Prefix for generated sprint identities.
+pub const SPRINT_ID_PREFIX: &str = "spr_";
+
+/// Prefix for generated task identities.
+pub const TASK_ID_PREFIX: &str = "tsk_";
 
 /// Largest display sequence representable by four-digit filename prefixes.
 pub const MAX_SEQUENCE: u32 = 9999;
@@ -74,6 +81,83 @@ pub fn create_dragon(root: &Path, title: &str) -> Result<NewArtifact, Error> {
 pub fn create_idea(root: &Path, title: &str) -> Result<NewArtifact, Error> {
     const SECTIONS: &[&str] = &["Problem", "Sketch", "Evidence"];
     create(root, &IDEA, IDEA_ID_PREFIX, SECTIONS, title)
+}
+
+/// Create a new active sprint in the repository at `root`.
+///
+/// A sprint artifact is `sprint.md` inside a fresh containment directory
+/// `NNNN-slug/`; the directory name carries the display sequence. At most
+/// one sprint may be active, so creation is refused while one is —
+/// naming it, since the caller's next move is usually to close it.
+///
+/// Deliberate duplication of [`create`] (idea 10 discipline): the
+/// containment-directory layout diverges from flat files at almost every
+/// step — sequence source, destination materialization, template shape —
+/// so the shared machinery reduces to slugging, identity, and the safe
+/// write.
+pub fn create_sprint(root: &Path, title: &str) -> Result<NewArtifact, Error> {
+    const SECTIONS: &[&str] = &["Goal", "Rationale", "Success criteria", "Non-goals"];
+    let title = title.trim();
+    let slug = slugify(title).ok_or_else(|| Error::InvalidInvocation {
+        message: format!(
+            "cannot create a sprint titled `{title}`: the title must contain \
+             at least one ASCII letter or digit to derive a directory slug"
+        ),
+    })?;
+
+    let sprints = crate::read::scan_sprints(root)?;
+    if let Some(active) = sprints
+        .iter()
+        .find(|sprint| sprint.summary.status == Status::Active)
+    {
+        return Err(Error::InvalidInvocation {
+            message: format!(
+                "sprint `{}` ({}) is still active; at most one sprint may be \
+                 active — close it with `strata close {}` first",
+                active.summary.reference(),
+                active.summary.title,
+                active.summary.reference()
+            ),
+        });
+    }
+
+    let max = sprints
+        .iter()
+        .map(|sprint| sprint.summary.sequence)
+        .max()
+        .unwrap_or(0);
+    if max >= MAX_SEQUENCE {
+        return Err(Error::ArtifactConflict {
+            path: root.join(SPRINTS_DIR),
+            reason: format!(
+                "the sprint collection has exhausted the four-digit display \
+                 sequence space (last sequence is {MAX_SEQUENCE})"
+            ),
+        });
+    }
+    let sequence = max + 1;
+    let id = format!("{SPRINT_ID_PREFIX}{}", ulid::Ulid::new());
+    let created = jiff::Zoned::now().strftime("%Y-%m-%d").to_string();
+    let content = render_artifact(
+        &id,
+        sequence,
+        SPRINT.kind,
+        Status::Active.name(),
+        &created,
+        title,
+        SECTIONS,
+    );
+
+    let dir_rel = format!("{SPRINTS_DIR}/{sequence:04}-{slug}");
+    crate::repo::ensure_dir(root, &dir_rel, &mut Vec::new())?;
+    write_new(&root.join(&dir_rel), SPRINT_FILE, &content)?;
+
+    Ok(NewArtifact {
+        kind: SPRINT.kind,
+        id,
+        sequence,
+        relative_path: Path::new(&dir_rel).join(SPRINT_FILE),
+    })
 }
 
 /// Create a new artifact in its collection's home lifecycle state.
@@ -235,6 +319,20 @@ pub(crate) fn parse_sequence(name: &str) -> Option<u32> {
     }
     let slug = name[4..].strip_prefix('-')?.strip_suffix(".md")?;
     if slug.is_empty() {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// Extract the display sequence from a valid sprint containment directory
+/// name (`NNNN-slug`), or `None` when the name does not conform.
+pub(crate) fn parse_dir_sequence(name: &str) -> Option<u32> {
+    let digits = name.get(..4)?;
+    if !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let slug = name[4..].strip_prefix('-')?;
+    if slug.is_empty() || slug.ends_with(".md") {
         return None;
     }
     digits.parse().ok()
@@ -670,6 +768,73 @@ mod tests {
 
         assert!(matches!(err, Error::InvalidInvocation { .. }), "{err:?}");
         assert_eq!(dragons_dir_entries(tmp.path()), Vec::<String>::new());
+    }
+
+    #[test]
+    fn create_sprint_writes_template_in_a_fresh_containment_directory() {
+        let tmp = temp_repo();
+
+        let sprint = create_sprint(tmp.path(), "Placement and sprints").unwrap();
+
+        assert_eq!(sprint.sequence, 1);
+        assert_eq!(sprint.reference(), "sprint:1");
+        assert!(sprint.id.starts_with(SPRINT_ID_PREFIX), "{}", sprint.id);
+        assert_eq!(
+            sprint.relative_path,
+            Path::new(SPRINTS_DIR).join("0001-placement-and-sprints/sprint.md")
+        );
+        let content = fs::read_to_string(tmp.path().join(&sprint.relative_path)).unwrap();
+        for needle in [
+            "kind: sprint",
+            "status: active",
+            "# Placement and sprints",
+            "## Goal",
+            "## Rationale",
+            "## Success criteria",
+            "## Non-goals",
+        ] {
+            assert!(content.contains(needle), "missing `{needle}`:\n{content}");
+        }
+    }
+
+    #[test]
+    fn create_sprint_is_refused_while_one_is_active() {
+        let tmp = temp_repo();
+        create_sprint(tmp.path(), "First").unwrap();
+
+        let err = create_sprint(tmp.path(), "Second").unwrap_err();
+
+        assert!(matches!(err, Error::InvalidInvocation { .. }), "{err:?}");
+        let message = err.to_string();
+        assert!(
+            message.contains("sprint:1") && message.contains("strata close"),
+            "the refusal must name the active sprint and the way out: {message}"
+        );
+    }
+
+    #[test]
+    fn sprint_sequences_continue_after_closed_sprints() {
+        let tmp = temp_repo();
+        let dir = tmp.path().join(SPRINTS_DIR).join("0004-history");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(SPRINT_FILE),
+            "---\nid: spr-history\nsequence: 4\nkind: sprint\nstatus: closed\ncreated: 2026-07-20\n---\n\n# History\n",
+        )
+        .unwrap();
+
+        let sprint = create_sprint(tmp.path(), "Next").unwrap();
+
+        assert_eq!(sprint.sequence, 5);
+    }
+
+    #[test]
+    fn parse_dir_sequence_accepts_only_containment_directory_names() {
+        assert_eq!(parse_dir_sequence("0001-bootstrap"), Some(1));
+        assert_eq!(parse_dir_sequence("9999-x"), Some(9999));
+        for bad in ["0001-x.md", "001-x", "0001-", "abcd-x", "0001"] {
+            assert_eq!(parse_dir_sequence(bad), None, "for {bad:?}");
+        }
     }
 
     #[test]

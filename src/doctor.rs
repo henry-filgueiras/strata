@@ -97,9 +97,32 @@ pub fn check(root: &Path) -> Result<Report, Error> {
     for collection in [&read::DRAGON, &read::IDEA] {
         scan_dir(root, collection, &mut findings, &mut artifacts)?;
     }
+    scan_sprints_dir(root, &mut findings, &mut artifacts)?;
 
     let artifacts_checked = artifacts.len();
     findings.extend(duplicate_findings(&artifacts));
+
+    // At most one sprint may be active (the `new sprint` refusal, verified
+    // here because a branch merge can produce the state no command allows).
+    let active: Vec<&str> = artifacts
+        .iter()
+        .filter(|artifact| {
+            artifact.summary.kind == "sprint" && artifact.summary.status == read::Status::Active
+        })
+        .map(|artifact| artifact.summary.path.as_str())
+        .collect();
+    if active.len() > 1 {
+        findings.push(Finding {
+            problem: "multiple-active-sprints",
+            path: active[0].into(),
+            detail: format!(
+                "at most one sprint may be active, but {} are: {}",
+                active.len(),
+                active.join(", ")
+            ),
+            severity: Severity::Error,
+        });
+    }
 
     // Typed edges (decision 10): validated over the cleanly parsed
     // artifacts against every front-matter id in the archaeology tree, so
@@ -200,9 +223,119 @@ fn scan_dir(
     Ok(())
 }
 
+/// Walk the sprints directory, collecting per-sprint findings and cleanly
+/// parsed sprint artifacts. Containment directories that fail structural
+/// expectations (a loose file, a malformed `NNNN-slug` name, a missing
+/// `sprint.md`) are findings; task files inside sprint directories are
+/// validated separately.
+fn scan_sprints_dir(
+    root: &Path,
+    findings: &mut Vec<Finding>,
+    artifacts: &mut Vec<Artifact>,
+) -> Result<(), Error> {
+    let dir_rel = crate::repo::SPRINTS_DIR;
+    let dir = root.join(dir_rel);
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(source) if source.kind() == io::ErrorKind::NotADirectory => {
+            findings.push(Finding {
+                problem: "artifact-conflict",
+                path: dir_rel.into(),
+                detail: "a non-directory object occupies this managed directory path; \
+                         move it aside"
+                    .into(),
+                severity: Severity::Error,
+            });
+            return Ok(());
+        }
+        Err(source) => {
+            return Err(Error::Filesystem {
+                operation: "read directory".into(),
+                path: dir,
+                source,
+            });
+        }
+    };
+
+    for entry in entries {
+        let entry = entry.map_err(|source| Error::Filesystem {
+            operation: "read directory entry".into(),
+            path: dir.clone(),
+            source,
+        })?;
+        let name = entry.file_name();
+        let Some(name_str) = name.to_str() else {
+            findings.push(Finding {
+                problem: "malformed-artifact",
+                path: format!("{dir_rel}/{}", name.to_string_lossy()),
+                detail: "directory name is not valid UTF-8".into(),
+                severity: Severity::Error,
+            });
+            continue;
+        };
+        if name_str.starts_with('.') {
+            continue;
+        }
+        let sprint_dir = dir.join(name_str);
+        let sprint_dir_rel = format!("{dir_rel}/{name_str}");
+        if !sprint_dir.is_dir() {
+            findings.push(Finding {
+                problem: "malformed-artifact",
+                path: sprint_dir_rel,
+                detail: "the sprints directory holds one containment directory per \
+                         sprint; a loose file cannot be a sprint artifact"
+                    .into(),
+                severity: Severity::Error,
+            });
+            continue;
+        }
+        let Some(sequence) = crate::artifact::parse_dir_sequence(name_str) else {
+            findings.push(Finding {
+                problem: "malformed-artifact",
+                path: sprint_dir_rel,
+                detail: "sprint containment directories must be named `NNNN-slug` \
+                         with a four-digit display sequence"
+                    .into(),
+                severity: Severity::Error,
+            });
+            continue;
+        };
+        let file = sprint_dir.join(crate::repo::SPRINT_FILE);
+        let file_rel = format!("{sprint_dir_rel}/{}", crate::repo::SPRINT_FILE);
+        if !file.is_file() {
+            findings.push(Finding {
+                problem: "malformed-artifact",
+                path: sprint_dir_rel,
+                detail: format!(
+                    "sprint containment directories must hold a `{}` artifact",
+                    crate::repo::SPRINT_FILE
+                ),
+                severity: Severity::Error,
+            });
+            continue;
+        }
+        match read::parse_artifact_at(
+            &file,
+            &file_rel,
+            sequence,
+            "the containment directory name",
+            &read::SPRINT,
+        ) {
+            Ok(artifact) => artifacts.push(artifact),
+            Err(error) => findings.push(finding_at(error, file_rel)),
+        }
+    }
+    Ok(())
+}
+
 /// Convert one per-file parse failure into a finding.
 fn file_finding(error: Error, dir_rel: &str, name: &str) -> Finding {
-    let path = format!("{dir_rel}/{name}");
+    finding_at(error, format!("{dir_rel}/{name}"))
+}
+
+/// Convert one per-file parse failure into a finding at `path`.
+fn finding_at(error: Error, path: String) -> Finding {
     match error {
         Error::MalformedArtifact { reason, .. } => Finding {
             problem: "malformed-artifact",
@@ -752,6 +885,75 @@ mod tests {
                 "archaeology/dragons/0001-a.md",
                 "archaeology/dragons/0002-b.md",
                 "archaeology/dragons/0003-c.md",
+            ]
+        );
+    }
+
+    fn seed_sprint(root: &Path, dir_name: &str, sequence: u32, status: &str) {
+        let dir = root.join(crate::repo::SPRINTS_DIR).join(dir_name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(crate::repo::SPRINT_FILE),
+            format!(
+                "---\nid: spr-{sequence}\nsequence: {sequence}\nkind: sprint\nstatus: {status}\ncreated: 2026-07-20\n---\n\n# Sprint {sequence}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn sprints_are_validated_and_a_single_active_sprint_is_healthy() {
+        let tmp = temp_repo();
+        seed_sprint(tmp.path(), "0001-history", 1, "closed");
+        seed_sprint(tmp.path(), "0002-current", 2, "active");
+
+        let report = check(tmp.path()).unwrap();
+
+        assert!(report.healthy(), "{:?}", report.findings);
+        assert_eq!(report.artifacts_checked, 2);
+    }
+
+    #[test]
+    fn multiple_active_sprints_are_an_error_naming_every_path() {
+        let tmp = temp_repo();
+        seed_sprint(tmp.path(), "0001-branch-a", 1, "active");
+        seed_sprint(tmp.path(), "0002-branch-b", 2, "active");
+
+        let report = check(tmp.path()).unwrap();
+
+        assert_eq!(
+            problems(&report),
+            vec![(
+                "multiple-active-sprints",
+                "archaeology/sprints/0001-branch-a/sprint.md"
+            )]
+        );
+        assert!(
+            report.findings[0].detail.contains("0002-branch-b"),
+            "{}",
+            report.findings[0].detail
+        );
+    }
+
+    #[test]
+    fn malformed_sprint_directories_are_findings_not_fatal() {
+        let tmp = temp_repo();
+        seed_sprint(tmp.path(), "0001-fine", 1, "closed");
+        fs::create_dir_all(tmp.path().join(crate::repo::SPRINTS_DIR).join("0002-empty")).unwrap();
+        fs::write(
+            tmp.path().join(crate::repo::SPRINTS_DIR).join("loose.md"),
+            "junk",
+        )
+        .unwrap();
+
+        let report = check(tmp.path()).unwrap();
+
+        assert_eq!(report.artifacts_checked, 1);
+        assert_eq!(
+            problems(&report),
+            vec![
+                ("malformed-artifact", "archaeology/sprints/0002-empty"),
+                ("malformed-artifact", "archaeology/sprints/loose.md"),
             ]
         );
     }

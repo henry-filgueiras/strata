@@ -24,14 +24,14 @@ pub enum Command {
     Init,
     /// Create an artifact; Strata assigns its sequence, slug, and identity
     New {
-        /// Collection for the new artifact (`dragon` or `idea`)
+        /// Collection for the new artifact (`dragon`, `idea`, or `sprint`)
         collection: Collection,
         /// Human-readable title for the artifact
         title: String,
     },
     /// List the artifacts in a collection
     List {
-        /// Collection to list (`dragons` or `ideas`)
+        /// Collection to list (`dragons`, `ideas`, or `sprints`)
         collection: Collection,
         /// Emit a deterministic JSON array instead of human-readable lines
         #[arg(long)]
@@ -53,25 +53,25 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Close an open dragon, moving it into its closed lifecycle state
+    /// Close an open dragon or an active sprint
     Close {
-        /// `dragon:sequence` reference (e.g. `dragon:7`) or a stable
+        /// `dragon:sequence` or `sprint:sequence` reference, or a stable
         /// artifact `id`
         reference: ArtifactTarget,
     },
-    /// Reopen a closed dragon, moving it back into its open lifecycle state
+    /// Reopen a closed dragon
     Reopen {
         /// `dragon:sequence` reference (e.g. `dragon:7`) or a stable
         /// artifact `id`
         reference: ArtifactTarget,
     },
-    /// Adopt a parked idea, moving it into its terminal adopted state
+    /// Adopt a parked idea into its terminal adopted state
     Adopt {
         /// `idea:sequence` reference (e.g. `idea:12`) or a stable
         /// artifact `id`
         reference: ArtifactTarget,
     },
-    /// Reject a parked idea, moving it into its terminal rejected state
+    /// Reject a parked idea into its terminal rejected state
     Reject {
         /// `idea:sequence` reference (e.g. `idea:12`) or a stable
         /// artifact `id`
@@ -87,6 +87,7 @@ pub enum Command {
 pub enum Collection {
     Dragon,
     Idea,
+    Sprint,
 }
 
 impl Collection {
@@ -95,6 +96,7 @@ impl Collection {
         match self {
             Collection::Dragon => "dragon",
             Collection::Idea => "idea",
+            Collection::Sprint => "sprint",
         }
     }
 }
@@ -106,8 +108,10 @@ impl FromStr for Collection {
         match s {
             "dragon" | "dragons" => Ok(Collection::Dragon),
             "idea" | "ideas" => Ok(Collection::Idea),
+            "sprint" | "sprints" => Ok(Collection::Sprint),
             other => Err(format!(
-                "unknown collection `{other}`; collections are: dragon, idea"
+                "unknown collection `{other}`; collections are: dragon, idea, \
+                 sprint"
             )),
         }
     }

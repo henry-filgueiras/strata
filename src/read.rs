@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::artifact::MAX_SEQUENCE;
 use crate::error::Error;
-use crate::repo::{DRAGONS_DIR, IDEAS_DIR};
+use crate::repo::{DRAGONS_DIR, IDEAS_DIR, SPRINTS_DIR};
 
 /// Lifecycle state of a managed artifact, carried only in front matter per
 /// decision 11: placement is flat, so the directory says nothing about
@@ -42,6 +42,8 @@ pub enum Status {
     Parked,
     Adopted,
     Rejected,
+    Active,
+    Pending,
 }
 
 impl Status {
@@ -53,6 +55,8 @@ impl Status {
             Status::Parked => "parked",
             Status::Adopted => "adopted",
             Status::Rejected => "rejected",
+            Status::Active => "active",
+            Status::Pending => "pending",
         }
     }
 }
@@ -69,13 +73,19 @@ pub struct Collection {
     /// Canonical singular kind name, as written in front matter.
     pub kind: &'static str,
     /// The one root-relative directory holding every artifact of the
-    /// collection, regardless of lifecycle state (decision 11).
+    /// collection, regardless of lifecycle state (decision 11). Sprints
+    /// and tasks share the sprints directory; their layouts diverge from
+    /// flat files in ways this descriptor cannot express (see the
+    /// dedicated scanners), which is recorded evidence for idea 10.
     pub dir: &'static str,
     /// Admitted lifecycle states; the first is the home state new
     /// artifacts are created in.
     pub states: &'static [Status],
     /// Legal lifecycle transitions as `(from, to)` pairs.
     pub transitions: &'static [(Status, Status)],
+    /// Whether reaching `closed` stamps a `closed:` date line into the
+    /// front matter as part of the transition write.
+    pub stamp_closed: bool,
 }
 
 /// The dragon collection: unresolved technical risks, `open <-> closed`.
@@ -87,6 +97,7 @@ pub static DRAGON: Collection = Collection {
         (Status::Open, Status::Closed),
         (Status::Closed, Status::Open),
     ],
+    stamp_closed: false,
 };
 
 /// The idea collection: uncommitted proposals, `parked -> adopted | rejected`.
@@ -99,6 +110,29 @@ pub static IDEA: Collection = Collection {
         (Status::Parked, Status::Adopted),
         (Status::Parked, Status::Rejected),
     ],
+    stamp_closed: false,
+};
+
+/// The sprint collection: units of scoped work, `active -> closed`.
+/// A sprint artifact is `sprint.md` inside its own containment directory
+/// `NNNN-slug/`; the directory name carries the display sequence.
+pub static SPRINT: Collection = Collection {
+    kind: "sprint",
+    dir: SPRINTS_DIR,
+    states: &[Status::Active, Status::Closed],
+    transitions: &[(Status::Active, Status::Closed)],
+    stamp_closed: true,
+};
+
+/// The task collection: work items, `pending -> closed`. Task files live
+/// inside their owning sprint's containment directory; sequences are
+/// global across sprints.
+pub static TASK: Collection = Collection {
+    kind: "task",
+    dir: SPRINTS_DIR,
+    states: &[Status::Pending, Status::Closed],
+    transitions: &[(Status::Pending, Status::Closed)],
+    stamp_closed: true,
 };
 
 impl Collection {
@@ -160,6 +194,10 @@ pub struct Summary {
     pub title: String,
     /// Opaque creation stamp from front matter.
     pub created: String,
+    /// For tasks only: the stable id of the owning sprint, from the
+    /// `sprint:` front-matter field. Absent for every other kind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sprint: Option<String>,
     /// Repository-relative path with `/` separators.
     pub path: String,
 }
@@ -218,6 +256,8 @@ struct FrontMatter {
     kind: String,
     status: String,
     created: String,
+    /// Required on tasks (the owning sprint's stable id); inert elsewhere.
+    sprint: Option<String>,
 }
 
 /// Parse every artifact of one collection in the repository at `root`,
@@ -247,6 +287,107 @@ pub fn scan(root: &Path, collection: &Collection) -> Result<Vec<Artifact>, Error
         (a.summary.sequence, &a.summary.path).cmp(&(b.summary.sequence, &b.summary.path))
     });
     Ok(artifacts)
+}
+
+/// Parse every sprint in the repository at `root`, sorted by display
+/// sequence ascending, then path.
+///
+/// A sprint artifact is `sprint.md` inside a containment directory named
+/// `NNNN-slug` under the sprints directory; the directory name carries the
+/// display sequence. A non-directory entry in the sprints directory, a
+/// malformed containment name, or a missing `sprint.md` is a typed error.
+pub fn scan_sprints(root: &Path) -> Result<Vec<Artifact>, Error> {
+    let mut artifacts = Vec::new();
+    for name in sprint_dir_names(root)? {
+        let (sequence, dir_rel) = (parse_dir_sequence(root, &name)?, name);
+        let path = root
+            .join(SPRINTS_DIR)
+            .join(&dir_rel)
+            .join(crate::repo::SPRINT_FILE);
+        if !path.is_file() {
+            return Err(Error::MalformedArtifact {
+                path: root.join(SPRINTS_DIR).join(&dir_rel),
+                reason: format!(
+                    "sprint containment directories must hold a `{}` artifact",
+                    crate::repo::SPRINT_FILE
+                ),
+            });
+        }
+        artifacts.push(parse_artifact_at(
+            &path,
+            &format!("{SPRINTS_DIR}/{dir_rel}/{}", crate::repo::SPRINT_FILE),
+            sequence,
+            "the containment directory name",
+            &SPRINT,
+        )?);
+    }
+    artifacts.sort_by(|a, b| {
+        (a.summary.sequence, &a.summary.path).cmp(&(b.summary.sequence, &b.summary.path))
+    });
+    Ok(artifacts)
+}
+
+/// Parse every task in the repository at `root`, across all sprint
+/// containment directories, sorted by display sequence ascending, then
+/// path. Task sequences are global across sprints.
+pub fn scan_tasks(root: &Path) -> Result<Vec<Artifact>, Error> {
+    let mut artifacts = Vec::new();
+    for dir_name in sprint_dir_names(root)? {
+        let dir_rel = format!("{SPRINTS_DIR}/{dir_name}");
+        let dir = root.join(&dir_rel);
+        for name in managed_entries(&dir)? {
+            if name == crate::repo::SPRINT_FILE {
+                continue;
+            }
+            let path = dir.join(&name);
+            if path.is_dir() {
+                return Err(Error::ArtifactConflict {
+                    path,
+                    reason: "a directory sits inside a sprint containment \
+                             directory; tasks file directly in their sprint's \
+                             directory (decision 11)"
+                        .into(),
+                });
+            }
+            artifacts.push(parse_artifact(&path, &dir_rel, &name, &TASK)?);
+        }
+    }
+    artifacts.sort_by(|a, b| {
+        (a.summary.sequence, &a.summary.path).cmp(&(b.summary.sequence, &b.summary.path))
+    });
+    Ok(artifacts)
+}
+
+/// Non-hidden sprint containment directory names, unordered. Every entry
+/// in the sprints directory must be a directory; stray files are a typed
+/// error rather than skipped.
+fn sprint_dir_names(root: &Path) -> Result<Vec<String>, Error> {
+    let dir = root.join(SPRINTS_DIR);
+    let mut names = Vec::new();
+    for name in managed_entries(&dir)? {
+        if !dir.join(&name).is_dir() {
+            return Err(Error::MalformedArtifact {
+                path: dir.join(&name),
+                reason: "the sprints directory holds one containment \
+                         directory per sprint; a loose file cannot be a \
+                         sprint artifact"
+                    .into(),
+            });
+        }
+        names.push(name);
+    }
+    Ok(names)
+}
+
+/// Parse the display sequence from a sprint containment directory name
+/// (`NNNN-slug`).
+fn parse_dir_sequence(root: &Path, name: &str) -> Result<u32, Error> {
+    crate::artifact::parse_dir_sequence(name).ok_or_else(|| Error::MalformedArtifact {
+        path: root.join(SPRINTS_DIR).join(name),
+        reason: "sprint containment directories must be named `NNNN-slug` \
+                 with a four-digit display sequence"
+            .into(),
+    })
 }
 
 /// Resolve `target` to exactly one artifact.
@@ -344,17 +485,38 @@ pub(crate) fn parse_artifact(
     collection: &Collection,
 ) -> Result<Artifact, Error> {
     let kind = collection.kind;
+    let filename_sequence =
+        crate::artifact::parse_sequence(file_name).ok_or_else(|| Error::MalformedArtifact {
+            path: path.to_path_buf(),
+            reason: format!(
+                "{kind} filenames must be `NNNN-slug.md` with a four-digit \
+                 display sequence"
+            ),
+        })?;
+    parse_artifact_at(
+        path,
+        &format!("{dir_rel}/{file_name}"),
+        filename_sequence,
+        "the filename",
+        collection,
+    )
+}
+
+/// Parse one managed artifact file whose display sequence is carried by
+/// `sequence_carrier` (a filename for flat files, a containment directory
+/// name for sprints), validating it against the front matter.
+pub(crate) fn parse_artifact_at(
+    path: &Path,
+    path_rel: &str,
+    expected_sequence: u32,
+    sequence_carrier: &str,
+    collection: &Collection,
+) -> Result<Artifact, Error> {
+    let kind = collection.kind;
     let malformed = |reason: String| Error::MalformedArtifact {
         path: path.to_path_buf(),
         reason,
     };
-
-    let filename_sequence = crate::artifact::parse_sequence(file_name).ok_or_else(|| {
-        malformed(format!(
-            "{kind} filenames must be `NNNN-slug.md` with a four-digit \
-             display sequence"
-        ))
-    })?;
 
     let content = fs::read_to_string(path).map_err(|source| {
         if source.kind() == io::ErrorKind::InvalidData {
@@ -386,8 +548,7 @@ pub(crate) fn parse_artifact(
     }
     if meta.kind != kind {
         return Err(malformed(format!(
-            "front-matter `kind` is `{}`, but artifacts in `{dir_rel}` must \
-             be `{kind}`",
+            "front-matter `kind` is `{}`, but this file must be a `{kind}`",
             meta.kind
         )));
     }
@@ -404,10 +565,10 @@ pub(crate) fn parse_artifact(
             meta.sequence
         )));
     }
-    if meta.sequence != filename_sequence {
+    if meta.sequence != expected_sequence {
         return Err(malformed(format!(
-            "sequence mismatch: the filename says {filename_sequence} but \
-             front matter says {}; they must agree",
+            "sequence mismatch: {sequence_carrier} says {expected_sequence} \
+             but front matter says {}; they must agree",
             meta.sequence
         )));
     }
@@ -416,6 +577,20 @@ pub(crate) fn parse_artifact(
             "front-matter `created` must be a non-empty string".into(),
         ));
     }
+    let sprint = if kind == "task" {
+        match &meta.sprint {
+            Some(id) if !id.is_empty() => Some(id.clone()),
+            _ => {
+                return Err(malformed(
+                    "tasks must carry a `sprint:` front-matter field naming \
+                     the owning sprint's stable id"
+                        .into(),
+                ));
+            }
+        }
+    } else {
+        None
+    };
 
     let title = extract_title(body).map_err(malformed)?;
 
@@ -427,7 +602,8 @@ pub(crate) fn parse_artifact(
             status,
             title,
             created: meta.created,
-            path: format!("{dir_rel}/{file_name}"),
+            sprint,
+            path: path_rel.to_string(),
         },
         content,
     })
@@ -652,6 +828,112 @@ mod tests {
         }
         assert_eq!(IDEA.parse_status("adopted"), Some(Status::Adopted));
         assert_eq!(IDEA.parse_status("open"), None);
+    }
+
+    fn seed_sprint(root: &Path, dir_name: &str, sequence: u32, status: &str) {
+        let dir = root.join(SPRINTS_DIR).join(dir_name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(crate::repo::SPRINT_FILE),
+            format!(
+                "---\nid: spr-{sequence}\nsequence: {sequence}\nkind: sprint\nstatus: {status}\ncreated: 2026-07-20\n---\n\n# Sprint {sequence}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn scan_sprints_parses_containment_directories() {
+        let tmp = temp_repo();
+        seed_sprint(tmp.path(), "0001-first", 1, "closed");
+        seed_sprint(tmp.path(), "0002-second", 2, "active");
+        // A task file inside a sprint directory is not a sprint.
+        fs::write(
+            tmp.path().join(SPRINTS_DIR).join("0001-first").join("0001-task.md"),
+            "---\nid: tsk-1\nsequence: 1\nkind: task\nstatus: closed\nsprint: spr-1\ncreated: 2026-07-20\n---\n\n# T\n",
+        )
+        .unwrap();
+
+        let sprints = scan_sprints(tmp.path()).unwrap();
+
+        assert_eq!(sprints.len(), 2);
+        assert_eq!(sprints[0].summary.reference(), "sprint:1");
+        assert_eq!(sprints[1].summary.status, Status::Active);
+        assert_eq!(
+            sprints[1].summary.path,
+            format!("{SPRINTS_DIR}/0002-second/sprint.md")
+        );
+    }
+
+    #[test]
+    fn sprint_directory_and_front_matter_sequence_must_agree() {
+        let tmp = temp_repo();
+        seed_sprint(tmp.path(), "0002-shifted", 1, "closed");
+
+        let err = scan_sprints(tmp.path()).unwrap_err();
+
+        expect_malformed(err, "sprint.md", "sequence mismatch");
+    }
+
+    #[test]
+    fn loose_file_in_the_sprints_directory_is_malformed() {
+        let tmp = temp_repo();
+        fs::create_dir_all(tmp.path().join(SPRINTS_DIR)).unwrap();
+        fs::write(tmp.path().join(SPRINTS_DIR).join("notes.md"), "junk").unwrap();
+
+        let err = scan_sprints(tmp.path()).unwrap_err();
+
+        expect_malformed(err, "notes.md", "containment");
+    }
+
+    #[test]
+    fn sprint_directory_without_sprint_file_is_malformed() {
+        let tmp = temp_repo();
+        fs::create_dir_all(tmp.path().join(SPRINTS_DIR).join("0001-empty")).unwrap();
+
+        let err = scan_sprints(tmp.path()).unwrap_err();
+
+        expect_malformed(err, "0001-empty", "sprint.md");
+    }
+
+    #[test]
+    fn tasks_scan_across_sprints_and_require_the_sprint_field() {
+        let tmp = temp_repo();
+        seed_sprint(tmp.path(), "0001-first", 1, "closed");
+        seed_sprint(tmp.path(), "0002-second", 2, "active");
+        for (dir, sequence, status, sprint) in [
+            ("0001-first", 1u32, "closed", "spr-1"),
+            ("0002-second", 2, "pending", "spr-2"),
+        ] {
+            fs::write(
+                tmp.path()
+                    .join(SPRINTS_DIR)
+                    .join(dir)
+                    .join(format!("{sequence:04}-work.md")),
+                format!(
+                    "---\nid: tsk-{sequence}\nsequence: {sequence}\nkind: task\nstatus: {status}\nsprint: {sprint}\ncreated: 2026-07-20\n---\n\n# Work {sequence}\n"
+                ),
+            )
+            .unwrap();
+        }
+
+        let tasks = scan_tasks(tmp.path()).unwrap();
+
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].summary.sprint.as_deref(), Some("spr-1"));
+        assert_eq!(tasks[1].summary.status, Status::Pending);
+
+        // A task without a sprint field is malformed.
+        fs::write(
+            tmp.path()
+                .join(SPRINTS_DIR)
+                .join("0002-second")
+                .join("0003-orphan.md"),
+            "---\nid: tsk-3\nsequence: 3\nkind: task\nstatus: pending\ncreated: 2026-07-20\n---\n\n# Orphan\n",
+        )
+        .unwrap();
+        let err = scan_tasks(tmp.path()).unwrap_err();
+        expect_malformed(err, "0003-orphan.md", "sprint");
     }
 
     #[test]
@@ -1053,6 +1335,7 @@ mod tests {
             status: Status::Open,
             title: "A title".into(),
             created: "2026-07-20".into(),
+            sprint: None,
             path: "archaeology/dragons/0007-a-title.md".into(),
         };
 
@@ -1061,6 +1344,27 @@ mod tests {
             "{\"id\":\"drg-x\",\"sequence\":7,\"kind\":\"dragon\",\"status\":\"open\",\
              \"title\":\"A title\",\"created\":\"2026-07-20\",\
              \"path\":\"archaeology/dragons/0007-a-title.md\"}"
+        );
+    }
+
+    #[test]
+    fn task_summaries_serialize_the_owning_sprint() {
+        let summary = Summary {
+            id: "tsk-x".into(),
+            sequence: 17,
+            kind: "task".into(),
+            status: Status::Pending,
+            title: "A task".into(),
+            created: "2026-07-22".into(),
+            sprint: Some("spr-x".into()),
+            path: "archaeology/sprints/0005-x/0017-a-task.md".into(),
+        };
+
+        assert_eq!(
+            serde_json::to_string(&summary).unwrap(),
+            "{\"id\":\"tsk-x\",\"sequence\":17,\"kind\":\"task\",\"status\":\"pending\",\
+             \"title\":\"A task\",\"created\":\"2026-07-22\",\"sprint\":\"spr-x\",\
+             \"path\":\"archaeology/sprints/0005-x/0017-a-task.md\"}"
         );
     }
 

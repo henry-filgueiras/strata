@@ -26,7 +26,7 @@ fn run(command: &Command) -> Result<(), Error> {
         Command::List { collection, json } => list(*collection, *json),
         Command::Show { reference, json } => show(reference, *json),
         Command::Doctor { json } => doctor(*json),
-        Command::Close { reference } => transition(reference, Collection::Dragon, Status::Closed),
+        Command::Close { reference } => close(reference),
         Command::Reopen { reference } => transition(reference, Collection::Dragon, Status::Open),
         Command::Adopt { reference } => transition(reference, Collection::Idea, Status::Adopted),
         Command::Reject { reference } => transition(reference, Collection::Idea, Status::Rejected),
@@ -34,11 +34,12 @@ fn run(command: &Command) -> Result<(), Error> {
     }
 }
 
-/// The read model of a command-line collection.
-fn model(collection: Collection) -> &'static read::Collection {
+/// Scan one command-line collection into the shared read model.
+fn scan(root: &std::path::Path, collection: Collection) -> Result<Vec<read::Artifact>, Error> {
     match collection {
-        Collection::Dragon => &read::DRAGON,
-        Collection::Idea => &read::IDEA,
+        Collection::Dragon => read::scan(root, &read::DRAGON),
+        Collection::Idea => read::scan(root, &read::IDEA),
+        Collection::Sprint => read::scan_sprints(root),
     }
 }
 
@@ -50,46 +51,105 @@ fn selector(target: &ArtifactTarget) -> read::Selector<'_> {
     }
 }
 
+/// The transition-verb guidance for one collection, used when a verb is
+/// applied to a reference outside its lifecycle.
+fn verb_guidance(collection: Collection) -> &'static str {
+    match collection {
+        Collection::Dragon => "dragons close and reopen: use `strata close` or `strata reopen`",
+        Collection::Idea => "ideas adopt or reject: use `strata adopt` or `strata reject`",
+        Collection::Sprint => "sprints close: use `strata close`",
+    }
+}
+
 /// Transition one artifact between lifecycle states and render the outcome.
 ///
 /// Each transition verb belongs to one collection's lifecycle; a reference
 /// into another collection is refused with the verbs that do apply, rather
-/// than resolved into a surprising move.
+/// than resolved into a surprising rewrite.
 fn transition(target: &ArtifactTarget, collection: Collection, to: Status) -> Result<(), Error> {
     if let ArtifactTarget::Reference(reference) = target
         && reference.collection != collection
     {
-        let guidance = match reference.collection {
-            Collection::Dragon => "dragons close and reopen: use `strata close` or `strata reopen`",
-            Collection::Idea => "ideas adopt or reject: use `strata adopt` or `strata reject`",
-        };
         return Err(Error::InvalidInvocation {
             message: format!(
-                "`{target}` is a {} reference; {guidance}",
-                reference.collection
+                "`{target}` is a {} reference; {}",
+                reference.collection,
+                verb_guidance(reference.collection)
             ),
         });
     }
     let root = repo::discover(&cwd()?)?;
     let done = transition::transition(
         &root,
-        model(collection),
+        match collection {
+            Collection::Dragon => &read::DRAGON,
+            Collection::Idea => &read::IDEA,
+            Collection::Sprint => &read::SPRINT,
+        },
         selector(target),
         &target.to_string(),
         to,
     )?;
-    let verb = match to {
+    render_transition(&done);
+    Ok(())
+}
+
+/// `strata close`: dragons and sprints share the verb, so the reference's
+/// collection picks the lifecycle; a bare stable id resolves over the
+/// union of the closable collections.
+fn close(target: &ArtifactTarget) -> Result<(), Error> {
+    let root = repo::discover(&cwd()?)?;
+    let collection = match target {
+        ArtifactTarget::Reference(reference) => reference.collection,
+        ArtifactTarget::Id(id) => {
+            let mut union = read::scan(&root, &read::DRAGON)?;
+            union.extend(read::scan_sprints(&root)?);
+            let artifact = read::resolve(&union, read::Selector::Id(id), id)?;
+            match artifact.summary.kind.as_str() {
+                "sprint" => Collection::Sprint,
+                _ => Collection::Dragon,
+            }
+        }
+    };
+    let done = match collection {
+        Collection::Dragon => transition::transition(
+            &root,
+            &read::DRAGON,
+            selector(target),
+            &target.to_string(),
+            Status::Closed,
+        )?,
+        Collection::Sprint => {
+            transition::close_sprint(&root, selector(target), &target.to_string())?
+        }
+        Collection::Idea => {
+            return Err(Error::InvalidInvocation {
+                message: format!(
+                    "`{target}` is an idea reference; {}",
+                    verb_guidance(Collection::Idea)
+                ),
+            });
+        }
+    };
+    render_transition(&done);
+    Ok(())
+}
+
+/// Render one performed transition.
+fn render_transition(done: &transition::Transition) {
+    let verb = match done.to {
         Status::Closed => "closed",
         Status::Open => "reopened",
         Status::Adopted => "adopted",
         Status::Rejected => "rejected",
         Status::Parked => "parked",
+        Status::Active => "activated",
+        Status::Pending => "pended",
     };
     println!(
         "{verb} {} ({} -> {}) at {}",
         done.reference, done.from, done.to, done.path
     );
-    Ok(())
 }
 
 /// Surface one open dragon or parked idea, weighted toward stale artifacts.
@@ -157,6 +217,7 @@ fn new_artifact(collection: Collection, title: &str) -> Result<(), Error> {
     let created = match collection {
         Collection::Dragon => artifact::create_dragon(&root, title)?,
         Collection::Idea => artifact::create_idea(&root, title)?,
+        Collection::Sprint => artifact::create_sprint(&root, title)?,
     };
     println!(
         "created {} at {}",
@@ -169,7 +230,7 @@ fn new_artifact(collection: Collection, title: &str) -> Result<(), Error> {
 /// List a collection's artifacts and render the requested projection.
 fn list(collection: Collection, json: bool) -> Result<(), Error> {
     let root = repo::discover(&cwd()?)?;
-    let artifacts = read::scan(&root, model(collection))?;
+    let artifacts = scan(&root, collection)?;
     if json {
         let summaries: Vec<_> = artifacts.iter().map(|a| &a.summary).collect();
         println!("{}", to_json(&summaries));
@@ -202,10 +263,11 @@ fn list(collection: Collection, json: bool) -> Result<(), Error> {
 fn show(target: &ArtifactTarget, json: bool) -> Result<(), Error> {
     let root = repo::discover(&cwd()?)?;
     let artifacts = match target {
-        ArtifactTarget::Reference(reference) => read::scan(&root, model(reference.collection))?,
+        ArtifactTarget::Reference(reference) => scan(&root, reference.collection)?,
         ArtifactTarget::Id(_) => {
             let mut all = read::scan(&root, &read::DRAGON)?;
             all.extend(read::scan(&root, &read::IDEA)?);
+            all.extend(read::scan_sprints(&root)?);
             all
         }
     };
