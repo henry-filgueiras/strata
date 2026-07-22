@@ -2,8 +2,9 @@
 id: spr-community-standards
 sequence: 3
 kind: sprint
-status: active
+status: closed
 created: 2026-07-22
+closed: 2026-07-22
 ---
 
 # Sprint 3: Community standards
@@ -81,3 +82,34 @@ capability field is left as an observation, not a proposal.
   idea 15 (`idea-capability-constrained-work`). This sprint's own
   concurrency is valid under idea 14's proposed rule: its scope is
   disjoint from sprint 2's and no cross-sprint dependency exists.
+
+## Retrospective (2026-07-22)
+
+All four tasks closed in a single day; GitHub's community-standards
+page shows every applicable item green. The repository is dual-licensed
+(decision 9), carries real community-health files and taxonomy-shaped
+templates, and has twelve discovery topics. The sprint produced one
+decision (9) and, through its meta-observations, ideas 14–16.
+
+Durable learnings, recorded where they belong:
+
+- Concurrent sprints worked without incident; the validity rule they
+  need — cross-sprint hard dependencies must target settled work, with
+  empty-frontier openings advisory — is idea 14, waiting on dragon 3's
+  edge vocabulary.
+- The executor gap yielded a full arc within one sprint: task 12 was
+  framed human-only, one criterion turned out to describe a UI the
+  agent could not see (content reports are organization-only), and
+  most of the rest proved API-reachable through an authenticated `gh`
+  session anyway. Both misjudgments sharpen idea 15's model:
+  affordances per required interface, asserted not verified, refutable
+  by the executor (idea 15 field note; task 12 amendment and result).
+- External checklists describe repository classes; verify an item
+  applies to *this* repository before transcribing it into acceptance
+  criteria (task 12 amendment).
+- Owner constraints are archaeology too: the launch-channel inventory
+  (idea 16) records account and karma gates so a future launch does
+  not rediscover them.
+
+The owner's process verdict on the sprint pair, quoted for the case
+study: "the emerging process is actually feeling pretty good."
