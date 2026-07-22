@@ -2,9 +2,10 @@
 id: tsk-manage-tasks-collection
 sequence: 20
 kind: task
-status: pending
+status: closed
 sprint: spr-placement-and-sprints
 created: 2026-07-22
+closed: 2026-07-22
 ---
 
 # Manage the tasks collection end to end
