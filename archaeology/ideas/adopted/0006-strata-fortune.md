@@ -2,8 +2,9 @@
 id: idea-strata-fortune
 sequence: 6
 kind: idea
-status: parked
+status: adopted
 created: 2026-07-20
+adopted: 2026-07-22
 ---
 
 # `strata fortune`: ambient recall of open risks
@@ -43,3 +44,21 @@ records nobody re-reads are a diary, not memory — motivated the
 case-study framing of this repository. Prior art: `fortune(6)`, MOTD,
 Oblique Strategies, spaced repetition (staleness-weighted selection is
 the same instinct pointed at risk registers).
+
+## Adoption (2026-07-22)
+
+Adopted by task 8 (`tsk-strata-fortune`), which landed `strata fortune`
+in sprint 2. Divergences from the sketch:
+
+- v1 draws only from open dragons; parked ideas join the pool when
+  ideas become a managed collection (per the sprint 2 non-goal).
+- Selection is staleness-weighted with every open dragon reachable —
+  the sketch's "least-recently-touched" extreme and the uniform
+  fortune-cookie mode both collapsed into one weighted draw; age comes
+  from `created`, since no touch metadata exists.
+- Per the task 8 amendment (thread `cmt-fortune-reproducibility`),
+  `--seed`, `--json`, and any selection-metadata surface are
+  deliberately excluded until a real automation consumer exists.
+
+The adoption hooks (shell greeting, MOTD, session preambles) remain
+placement suggestions, not shipped configuration.

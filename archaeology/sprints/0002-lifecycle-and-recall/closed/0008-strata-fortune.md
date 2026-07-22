@@ -2,9 +2,10 @@
 id: tsk-strata-fortune
 sequence: 8
 kind: task
-status: pending
+status: closed
 sprint: spr-lifecycle-and-recall
 created: 2026-07-21
+closed: 2026-07-22
 ---
 
 # Ambient recall: `strata fortune`
@@ -54,3 +55,42 @@ managed collection).
   automation later needs deterministic "most neglected" retrieval,
   that is an ordering on `list` (or a recall sibling), not a seed on
   fortune. Provenance: thread `cmt-fortune-reproducibility`.
+
+## Result
+
+`strata fortune` lands in `src/fortune.rs` as pure functions with the
+rendering in `main`. Output is two header lines — `dragon:N  Title`,
+then age and repository-relative path — followed by up to three lines
+of body prose as the excerpt (headings, blanks, and fenced code
+skipped). Implementation details, documented per the acceptance
+criteria:
+
+- The weight function is `max(age_days, 0) + 1`: linear in age from the
+  front-matter `created` date, so monotonic, and at least 1 so every
+  open dragon — including future-dated or unparseable stamps, which
+  render as `opened today` / `age unknown` — stays reachable. Unit
+  tests pin monotonicity and everywhere-nonzero directly, plus a
+  reachability sweep over a full cumulative-weight cycle.
+- The single draw is `pick(weights, roll)`, a cumulative walk taking
+  its randomness as a parameter. The binary feeds it a fresh ULID's
+  80-bit random component — real entropy already in the dependency
+  tree, avoiding a `rand` dependency for one draw. Modulo bias over
+  day-scale totals is negligible and the weighting is an
+  implementation detail, not a contract.
+- Read-only throughout: scan, filter to open, print. The empty and
+  marker-only repository states print a friendly line and exit 0.
+
+Idea 6 moved to `adopted/` with divergences recorded there: open
+dragons only in v1, one weighted draw instead of two modes, and the
+amendment's exclusions (`--seed`, `--json`) upheld.
+
+## Verification
+
+`scripts/check.sh` clean (fmt, 164 tests, clippy). Unit tests pin the
+weight function's monotonicity and nonzero floor, the cumulative walk,
+excerpt extraction, and age parsing/rendering; integration tests pin
+the output shape, both empty states, degradation on an unparseable
+`created`, no mutation across runs, and — over repeated invocations —
+membership of every recall in the open set with closed dragons never
+surfaced. Dogfooded live: fortune surfaced dragon 1 (reference, title,
+`open 2 days`, path, excerpt) in this repository.

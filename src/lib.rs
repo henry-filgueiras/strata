@@ -8,6 +8,7 @@ pub mod artifact;
 pub mod cli;
 pub mod doctor;
 pub mod error;
+pub mod fortune;
 pub mod read;
 pub mod repo;
 pub mod transition;

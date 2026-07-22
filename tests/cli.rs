@@ -22,7 +22,9 @@ fn help_lists_bootstrap_commands() {
     let out = strata(&["--help"]);
     assert!(out.status.success(), "--help must exit 0");
     let help = stdout(&out);
-    for command in ["init", "new", "list", "show", "doctor", "close", "reopen"] {
+    for command in [
+        "init", "new", "list", "show", "doctor", "close", "reopen", "fortune",
+    ] {
         assert!(
             help.contains(command),
             "help output missing `{command}`:\n{help}"

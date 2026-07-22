@@ -5,7 +5,7 @@ use clap::Parser;
 use strata::cli::{ArtifactTarget, Cli, Collection, Command};
 use strata::error::Error;
 use strata::read::Status;
-use strata::{artifact, doctor, read, repo, transition};
+use strata::{artifact, doctor, fortune, read, repo, transition};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -28,6 +28,7 @@ fn run(command: &Command) -> Result<(), Error> {
         Command::Doctor { json } => doctor(*json),
         Command::Close { reference } => transition(reference, Status::Closed),
         Command::Reopen { reference } => transition(reference, Status::Open),
+        Command::Fortune => fortune(),
     }
 }
 
@@ -51,6 +52,47 @@ fn transition(target: &ArtifactTarget, to: Status) -> Result<(), Error> {
         "{verb} {} ({} -> {}) at {}",
         done.reference, done.from, done.to, done.to_path
     );
+    Ok(())
+}
+
+/// Surface one open dragon, weighted toward stale risks.
+fn fortune() -> Result<(), Error> {
+    let root = repo::discover(&cwd()?)?;
+    let artifacts = read::scan_dragons(&root)?;
+    let open: Vec<_> = artifacts
+        .iter()
+        .filter(|artifact| artifact.summary.status == Status::Open)
+        .collect();
+    if open.is_empty() {
+        println!(
+            "no open dragons — nothing lurks; record new risks with \
+             `strata new dragon \"<title>\"`"
+        );
+        return Ok(());
+    }
+    let today = jiff::Zoned::now().date();
+    let ages: Vec<_> = open
+        .iter()
+        .map(|artifact| fortune::age_days(&artifact.summary.created, today))
+        .collect();
+    let weights: Vec<u64> = ages.iter().map(|age| fortune::weight(*age)).collect();
+    // The draw's entropy comes from a fresh ULID's 80-bit random component;
+    // selection itself is the pure, tested `pick`.
+    let index = fortune::pick(&weights, ulid::Ulid::new().random());
+    let chosen = open[index];
+    println!("{}  {}", chosen.summary.reference(), chosen.summary.title);
+    println!(
+        "{}  {}",
+        fortune::age_text(ages[index]),
+        chosen.summary.path
+    );
+    let excerpt = fortune::excerpt(&chosen.content, 3);
+    if !excerpt.is_empty() {
+        println!();
+        for line in &excerpt {
+            println!("  {line}");
+        }
+    }
     Ok(())
 }
 

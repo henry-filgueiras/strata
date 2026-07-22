@@ -65,6 +65,8 @@ pub enum Command {
         /// artifact `id`
         reference: ArtifactTarget,
     },
+    /// Surface one open dragon at random, favoring stale risks
+    Fortune,
 }
 
 /// Artifact collections known to the bootstrap implementation.

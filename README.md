@@ -153,6 +153,7 @@ Strata is bootstrapping its smallest useful vertical slice. Honest scoreboard:
 | `strata show dragon:N` | inspect one artifact | ✅ |
 | `strata doctor [--json]` | validate repository invariants, report every finding | ✅ |
 | `strata close dragon:N` / `strata reopen dragon:N` | transition an artifact between lifecycle states, safely | ✅ |
+| `strata fortune` | resurface one open dragon, favoring stale risks | ✅ |
 
 The bootstrap hardcodes the `dragon` collection while the mechanics are
 proven; the other collections above are maintained manually until then.
