@@ -4,6 +4,7 @@ sequence: 3
 kind: dragon
 status: closed
 created: 2026-07-20
+resolved-by: "[[dec-reference-syntax|wikilink markers and provenance edges]]"
 ---
 
 # Reference marker syntax and typed edge vocabulary

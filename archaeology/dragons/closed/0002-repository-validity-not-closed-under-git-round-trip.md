@@ -4,6 +4,7 @@ sequence: 2
 kind: dragon
 status: closed
 created: 2026-07-20
+resolved-by: "[[dec-bootstrap-repo-marker|repository marker and init safety]]"
 ---
 
 # Repository validity is not closed under Git round-trip

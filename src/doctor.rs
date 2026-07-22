@@ -16,6 +16,11 @@
 //! `problem` codes are a provisional vocabulary (see task 0005): they are
 //! deliberately few, aligned with the error categories where one applies,
 //! and expected to be revisited when doctor covers more collections.
+//!
+//! Findings carry a [`Severity`] per decision 10's tiers: `error` findings
+//! are corruption and make the repository unhealthy; `advice` findings are
+//! repairable states (an unbound sugar edge, a lifecycle-contradicting
+//! edge) that are reported without failing validation.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -27,34 +32,56 @@ use serde::Serialize;
 use crate::error::Error;
 use crate::read::{self, Artifact, Collection, Status};
 
-/// One validation problem. Serialized field names and order are a
+/// How strongly one finding indicts the repository.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Severity {
+    /// Corruption: the repository is unhealthy until repaired.
+    Error,
+    /// Repairable: legal but weak state, reported without failing.
+    Advice,
+}
+
+/// One validation finding. Serialized field names and order are a
 /// compatibility surface pinned by tests; `path` is repository-relative
 /// with `/` separators.
 #[derive(Debug, Clone, Serialize)]
 pub struct Finding {
     /// Provisional kebab-case problem code: `malformed-artifact`,
-    /// `unreadable-artifact`, `artifact-conflict`, `duplicate-id`, or
-    /// `duplicate-sequence`.
+    /// `unreadable-artifact`, `artifact-conflict`, `duplicate-id`,
+    /// `duplicate-sequence`, or a typed-edge code (`invalid-edge`,
+    /// `dangling-edge`, `unbound-edge`, `stale-edge`).
     pub problem: &'static str,
     /// Repository-relative path of the affected file or directory.
     pub path: String,
     /// Human-oriented description; free to change.
     pub detail: String,
+    /// Whether this finding is corruption or repairable advice.
+    pub severity: Severity,
 }
 
 /// The outcome of one validation pass.
 #[derive(Debug)]
 pub struct Report {
-    /// Every problem found, sorted by path, then problem, then detail.
+    /// Every finding, sorted by path, then problem, then detail.
     pub findings: Vec<Finding>,
     /// Artifacts that parsed cleanly and entered the duplicate checks.
     pub artifacts_checked: usize,
 }
 
 impl Report {
-    /// True when validation found nothing wrong.
+    /// True when validation found no corruption; advice findings do not
+    /// make a repository unhealthy.
     pub fn healthy(&self) -> bool {
-        self.findings.is_empty()
+        self.problems() == 0
+    }
+
+    /// Number of error-severity findings.
+    pub fn problems(&self) -> usize {
+        self.findings
+            .iter()
+            .filter(|finding| finding.severity == Severity::Error)
+            .count()
     }
 }
 
@@ -82,6 +109,24 @@ pub fn check(root: &Path) -> Result<Report, Error> {
 
     let artifacts_checked = artifacts.len();
     findings.extend(duplicate_findings(&artifacts));
+
+    // Typed edges (decision 10): validated over the cleanly parsed
+    // artifacts against every front-matter id in the archaeology tree, so
+    // provenance targets in not-yet-managed collections still resolve.
+    let universe = crate::edges::harvest_ids(root);
+    for artifact in &artifacts {
+        for edge_issue in
+            crate::edges::check_artifact(&artifact.summary, &artifact.content, &universe)
+        {
+            findings.push(Finding {
+                problem: edge_issue.problem,
+                path: artifact.summary.path.clone(),
+                detail: edge_issue.detail,
+                severity: edge_issue.severity,
+            });
+        }
+    }
+
     findings.sort_by(|a, b| (&a.path, a.problem, &a.detail).cmp(&(&b.path, b.problem, &b.detail)));
     Ok(Report {
         findings,
@@ -112,6 +157,7 @@ fn scan_dir(
                 detail: "a non-directory object occupies this managed directory path; \
                          move it aside"
                     .into(),
+                severity: Severity::Error,
             });
             return Ok(());
         }
@@ -136,6 +182,7 @@ fn scan_dir(
                 problem: "malformed-artifact",
                 path: format!("{dir_rel}/{}", name.to_string_lossy()),
                 detail: "filename is not valid UTF-8".into(),
+                severity: Severity::Error,
             });
             continue;
         };
@@ -158,6 +205,7 @@ fn file_finding(error: Error, dir_rel: &str, name: &str) -> Finding {
             problem: "malformed-artifact",
             path,
             detail: reason,
+            severity: Severity::Error,
         },
         Error::Filesystem {
             operation, source, ..
@@ -165,6 +213,7 @@ fn file_finding(error: Error, dir_rel: &str, name: &str) -> Finding {
             problem: "unreadable-artifact",
             path,
             detail: format!("{operation} failed: {source}"),
+            severity: Severity::Error,
         },
         // parse_dragon produces only the two variants above; anything else
         // would be a validation semantic doctor does not know how to
@@ -173,6 +222,7 @@ fn file_finding(error: Error, dir_rel: &str, name: &str) -> Finding {
             problem: "malformed-artifact",
             path,
             detail: other.to_string(),
+            severity: Severity::Error,
         },
     }
 }
@@ -203,6 +253,7 @@ fn duplicate_findings(artifacts: &[Artifact]) -> Vec<Finding> {
                 problem: "duplicate-id",
                 path: paths[0].into(),
                 detail: format!("stable id `{id}` is shared by: {}", paths.join(", ")),
+                severity: Severity::Error,
             });
         }
     }
@@ -216,6 +267,7 @@ fn duplicate_findings(artifacts: &[Artifact]) -> Vec<Finding> {
                     "display sequence {kind}:{sequence} is shared by: {}",
                     paths.join(", ")
                 ),
+                severity: Severity::Error,
             });
         }
     }
@@ -439,6 +491,203 @@ mod tests {
         );
     }
 
+    /// Seed an unmanaged decision artifact so the id universe contains a
+    /// legal typed-edge target.
+    fn seed_decision(root: &Path, id: &str) {
+        let dir = root.join("archaeology/decisions");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("0001-a-decision.md"),
+            format!(
+                "---\nid: {id}\nsequence: 1\nkind: decision\nstatus: accepted\ncreated: 2026-07-20\n---\n\n# A decision\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    fn closed_dragon_with_edge(edge_line: &str) -> String {
+        format!(
+            "---\nid: drg-settled\nsequence: 1\nkind: dragon\nstatus: closed\ncreated: 2026-07-20\n{edge_line}\n---\n\n# Settled\n"
+        )
+    }
+
+    #[test]
+    fn valid_provenance_edges_pass_and_target_unmanaged_artifacts() {
+        let tmp = temp_repo();
+        seed_decision(tmp.path(), "dec-settles-it");
+        write_dragon(
+            tmp.path(),
+            DRAGONS_CLOSED_DIR,
+            "0001-settled.md",
+            &closed_dragon_with_edge("resolved-by: \"[[dec-settles-it|the settling decision]]\""),
+        );
+
+        let report = check(tmp.path()).unwrap();
+
+        assert!(report.healthy(), "{:?}", report.findings);
+        assert!(report.findings.is_empty(), "{:?}", report.findings);
+    }
+
+    #[test]
+    fn dangling_edge_target_is_an_error() {
+        let tmp = temp_repo();
+        write_dragon(
+            tmp.path(),
+            DRAGONS_CLOSED_DIR,
+            "0001-settled.md",
+            &closed_dragon_with_edge("resolved-by: \"[[dec-nowhere|gone]]\""),
+        );
+
+        let report = check(tmp.path()).unwrap();
+
+        assert!(!report.healthy());
+        assert_eq!(
+            problems(&report),
+            vec![(
+                "dangling-edge",
+                "archaeology/dragons/closed/0001-settled.md"
+            )]
+        );
+        assert!(report.findings[0].detail.contains("dec-nowhere"));
+    }
+
+    #[test]
+    fn edge_targeting_an_idea_is_an_error() {
+        let tmp = temp_repo();
+        seed_idea(
+            tmp.path(),
+            IDEAS_PARKED_DIR,
+            "0001-idea.md",
+            &idea_markdown("idea-tempting", 1, "parked", "Tempting"),
+        );
+        write_dragon(
+            tmp.path(),
+            DRAGONS_CLOSED_DIR,
+            "0001-settled.md",
+            &closed_dragon_with_edge("resolved-by: \"[[idea-tempting|an idea]]\""),
+        );
+
+        let report = check(tmp.path()).unwrap();
+
+        assert_eq!(
+            problems(&report),
+            vec![("invalid-edge", "archaeology/dragons/closed/0001-settled.md")]
+        );
+        assert!(
+            report.findings[0].detail.contains("idea"),
+            "{}",
+            report.findings[0].detail
+        );
+    }
+
+    #[test]
+    fn sugar_edge_value_is_advice_not_corruption() {
+        let tmp = temp_repo();
+        write_dragon(
+            tmp.path(),
+            DRAGONS_CLOSED_DIR,
+            "0001-settled.md",
+            &closed_dragon_with_edge("resolved-by: \"[[decision:1]]\""),
+        );
+
+        let report = check(tmp.path()).unwrap();
+
+        assert!(report.healthy(), "sugar must not fail validation");
+        assert_eq!(
+            problems(&report),
+            vec![("unbound-edge", "archaeology/dragons/closed/0001-settled.md")]
+        );
+        assert_eq!(report.findings[0].severity, Severity::Advice);
+    }
+
+    #[test]
+    fn lifecycle_contradicting_edge_is_advice() {
+        let tmp = temp_repo();
+        seed_decision(tmp.path(), "dec-settles-it");
+        // A reopened dragon still carrying its resolution edge.
+        write_dragon(
+            tmp.path(),
+            DRAGONS_OPEN_DIR,
+            "0001-reopened.md",
+            "---\nid: drg-reopened\nsequence: 1\nkind: dragon\nstatus: open\ncreated: 2026-07-20\nresolved-by: \"[[dec-settles-it|stale claim]]\"\n---\n\n# Reopened\n",
+        );
+
+        let report = check(tmp.path()).unwrap();
+
+        assert!(report.healthy());
+        assert_eq!(
+            problems(&report),
+            vec![("stale-edge", "archaeology/dragons/open/0001-reopened.md")]
+        );
+    }
+
+    #[test]
+    fn edge_on_the_wrong_source_kind_is_an_error() {
+        let tmp = temp_repo();
+        seed_idea(
+            tmp.path(),
+            IDEAS_PARKED_DIR,
+            "0001-idea.md",
+            "---\nid: idea-confused\nsequence: 1\nkind: idea\nstatus: parked\ncreated: 2026-07-20\nresolved-by: \"[[dec-x|label]]\"\n---\n\n# Confused\n",
+        );
+
+        let report = check(tmp.path()).unwrap();
+
+        assert_eq!(
+            problems(&report),
+            vec![("invalid-edge", "archaeology/ideas/parked/0001-idea.md")]
+        );
+        assert!(
+            report.findings[0].detail.contains("belong on dragons"),
+            "{}",
+            report.findings[0].detail
+        );
+    }
+
+    #[test]
+    fn unquoted_edge_marker_is_an_error_naming_the_yaml_footgun() {
+        let tmp = temp_repo();
+        seed_decision(tmp.path(), "dec-settles-it");
+        // Without quotes, YAML parses `[[a|b]]` as a nested flow sequence.
+        write_dragon(
+            tmp.path(),
+            DRAGONS_CLOSED_DIR,
+            "0001-settled.md",
+            &closed_dragon_with_edge("resolved-by: [[dec-settles-it|label]]"),
+        );
+
+        let report = check(tmp.path()).unwrap();
+
+        assert_eq!(
+            problems(&report),
+            vec![("invalid-edge", "archaeology/dragons/closed/0001-settled.md")]
+        );
+        assert!(
+            report.findings[0].detail.contains("quoted"),
+            "{}",
+            report.findings[0].detail
+        );
+    }
+
+    #[test]
+    fn unknown_front_matter_keys_are_inert() {
+        let tmp = temp_repo();
+        write_dragon(
+            tmp.path(),
+            DRAGONS_CLOSED_DIR,
+            "0001-settled.md",
+            &closed_dragon_with_edge("supersedes: \"[[dec-nowhere|not vocabulary]]\""),
+        );
+
+        let report = check(tmp.path()).unwrap();
+
+        assert!(
+            report.findings.is_empty(),
+            "keys outside the vocabulary are data: {:?}",
+            report.findings
+        );
+    }
+
     #[test]
     fn non_directory_at_managed_path_is_a_conflict_finding() {
         let tmp = temp_repo();
@@ -517,13 +766,15 @@ mod tests {
             problem: "duplicate-sequence",
             path: "archaeology/dragons/open/0001-a.md".into(),
             detail: "display sequence 1 is shared by: a, b".into(),
+            severity: Severity::Error,
         };
 
         assert_eq!(
             serde_json::to_string(&finding).unwrap(),
             "{\"problem\":\"duplicate-sequence\",\
              \"path\":\"archaeology/dragons/open/0001-a.md\",\
-             \"detail\":\"display sequence 1 is shared by: a, b\"}"
+             \"detail\":\"display sequence 1 is shared by: a, b\",\
+             \"severity\":\"error\"}"
         );
     }
 }

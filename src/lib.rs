@@ -7,6 +7,7 @@
 pub mod artifact;
 pub mod cli;
 pub mod doctor;
+pub mod edges;
 pub mod error;
 pub mod fortune;
 pub mod read;

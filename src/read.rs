@@ -460,7 +460,7 @@ pub(crate) fn parse_artifact(
 /// The file must begin with a `---` line; the metadata block ends at the
 /// next line consisting of `---`. Returns `(front_matter, body)`, or `None`
 /// when either delimiter is missing.
-fn split_front_matter(content: &str) -> Option<(&str, &str)> {
+pub(crate) fn split_front_matter(content: &str) -> Option<(&str, &str)> {
     let rest = content.strip_prefix("---\n")?;
     if let Some(end) = rest.find("\n---\n") {
         Some((&rest[..end + 1], &rest[end + 5..]))

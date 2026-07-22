@@ -221,21 +221,38 @@ fn doctor(json: bool) -> Result<(), Error> {
     let report = doctor::check(&root)?;
     if json {
         println!("{}", to_json(&report.findings));
-    } else if report.healthy() {
-        println!(
-            "doctor: {} artifact(s) checked, no problems found",
-            report.artifacts_checked
-        );
     } else {
         for finding in &report.findings {
-            println!("{}  {}: {}", finding.problem, finding.path, finding.detail);
+            let prefix = match finding.severity {
+                doctor::Severity::Error => "",
+                doctor::Severity::Advice => "advice  ",
+            };
+            println!(
+                "{prefix}{}  {}: {}",
+                finding.problem, finding.path, finding.detail
+            );
+        }
+        if report.healthy() {
+            let advice = report.findings.len();
+            if advice > 0 {
+                println!(
+                    "doctor: {} artifact(s) checked, no problems found, \
+                     {advice} advisory note(s)",
+                    report.artifacts_checked
+                );
+            } else {
+                println!(
+                    "doctor: {} artifact(s) checked, no problems found",
+                    report.artifacts_checked
+                );
+            }
         }
     }
     if report.healthy() {
         Ok(())
     } else {
         Err(Error::UnhealthyRepository {
-            problems: report.findings.len(),
+            problems: report.problems(),
         })
     }
 }

@@ -138,6 +138,47 @@ fn json_findings_are_an_empty_array_when_healthy() {
 }
 
 #[test]
+fn advisory_findings_report_without_failing_validation() {
+    let tmp = init_repo();
+    // An unbound sugar edge is legal but weak (decisions 6 and 10):
+    // reported as advice, never as corruption.
+    fs::write(
+        tmp.path().join(CLOSED_DIR).join("0001-settled.md"),
+        "---\nid: drg-settled\nsequence: 1\nkind: dragon\nstatus: closed\ncreated: 2026-07-20\nresolved-by: \"[[decision:1]]\"\n---\n\n# Settled\n",
+    )
+    .unwrap();
+
+    let human = strata_in(tmp.path(), &["doctor"]);
+    assert!(human.status.success(), "{}", stderr(&human));
+    let text = stdout(&human);
+    assert!(text.contains("advice"), "{text}");
+    assert!(text.contains("unbound-edge"), "{text}");
+    assert!(text.contains("1 advisory note(s)"), "{text}");
+
+    let json = strata_in(tmp.path(), &["doctor", "--json"]);
+    assert!(json.status.success(), "{}", stderr(&json));
+    let findings: serde_json::Value = serde_json::from_str(stdout(&json).trim()).unwrap();
+    assert_eq!(findings[0]["problem"], "unbound-edge");
+    assert_eq!(findings[0]["severity"], "advice");
+}
+
+#[test]
+fn dangling_provenance_edges_are_corruption() {
+    let tmp = init_repo();
+    fs::write(
+        tmp.path().join(CLOSED_DIR).join("0001-settled.md"),
+        "---\nid: drg-settled\nsequence: 1\nkind: dragon\nstatus: closed\ncreated: 2026-07-20\nresolved-by: \"[[dec-nowhere|gone]]\"\n---\n\n# Settled\n",
+    )
+    .unwrap();
+
+    let out = strata_in(tmp.path(), &["doctor"]);
+
+    assert_eq!(out.status.code(), Some(9), "{}", stderr(&out));
+    assert!(stdout(&out).contains("dangling-edge"), "{}", stdout(&out));
+    assert!(stderr(&out).contains("1 problem(s)"), "{}", stderr(&out));
+}
+
+#[test]
 fn doctor_outside_a_repository_is_a_missing_repository_error() {
     let tmp = tempfile::tempdir().unwrap();
 

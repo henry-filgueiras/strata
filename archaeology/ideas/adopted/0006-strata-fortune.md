@@ -5,6 +5,7 @@ kind: idea
 status: adopted
 created: 2026-07-20
 adopted: 2026-07-22
+adopted-by: "[[tsk-strata-fortune|ambient recall task]]"
 ---
 
 # `strata fortune`: ambient recall of open risks
