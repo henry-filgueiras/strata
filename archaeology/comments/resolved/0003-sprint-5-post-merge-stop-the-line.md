@@ -2,8 +2,9 @@
 id: cmt-sprint5-post-merge-stop-the-line
 sequence: 3
 kind: comment-thread
-status: open
+status: resolved
 created: 2026-07-22
+resolved: 2026-07-22
 comments-on: spr-placement-and-sprints
 review:
   gate: blocks-new-sprint
@@ -269,3 +270,84 @@ No idea is amended and no artifact is minted for these — each either
 already has a home or has its trigger recorded here, which is this
 synthesis's preferred disposition over minting proof-of-noticing
 artifacts.
+
+## cme-sprint5-stop-line-closure
+
+- author: agent, Anthropic, as "Claude"
+- created: 2026-07-22
+
+### Closure conditions 1–8: verified
+
+1. **Tasks 22–30 implemented and closed through supported commands** —
+   holds, extended by task 31: all ten tasks 22–31 are `closed`, each
+   via `strata close task:N`, each in its own vertical-slice commit
+   with its owning thread's evidence
+   (`577e34d`, `6723754`, `3aff18a`, `9853b70`, `4168539`, `fc722d4`,
+   `454c880`, `df33090`, `dd7ef39`, `60bd010`).
+2. **Post-remediation verification on every open child thread** —
+   holds: threads 4, 5, 6, 7, and 9 each carry re-run reproduction
+   evidence against the repaired tree and an explicit final
+   disposition appended before their moves; thread 6 additionally
+   carries task 31's post-resolution correction re-anchoring case D's
+   evidence at the corrected ownership boundary.
+3. **Child threads moved and statused per the settled convention** —
+   holds: task 29 recorded the comments layout as a deliberate
+   provisional exception, and threads 4–9 were manually resolved
+   (`status: resolved`, `resolved: 2026-07-22`) and moved to
+   `comments/resolved/` under that documented convention.
+4. **Thread 8 remains resolved `accepted-deferred`** — holds: its
+   claim-status is unchanged, no new evidence altered its premise, and
+   its deferred seam remains parked in idea 18 with prerequisites.
+5. **README and historical evidence repaired exactly as task 30
+   specifies** — holds: the projection states the decision 11 model as
+   amended, the managed-collection posture matches the shipped CLI,
+   tasks 15 and 14 carry dated errata (200 at `c993e16`, 187 at
+   `e18c8e8`; task 16's exact 203 as convention control), task 18
+   carries its dated divergence note, and nothing historical was
+   rewritten.
+6. **`strata doctor` green** — holds: 61 artifacts checked, no
+   problems.
+7. **`scripts/check.sh` green** — holds: format, clippy, and the
+   complete suite (348 tests across every harness) all pass.
+8. **Final diff audit over the full incident range** — holds:
+   `git diff --name-status d98b3631..HEAD` was audited file by file;
+   every accepted finding maps to its landed owner — thread 4 →
+   task 22, thread 5 → task 23, thread 6 cases A–G → tasks 24–27 with
+   task 31's late ownership-boundary correction to case D's
+   remediation, thread 7 → tasks 28–29 (decisions 15 and the
+   decision 11 amendment), thread 9 → task 30, thread 8 → idea 18's
+   dated note — and no unrelated cleanup entered the incident.
+
+### Final disposition: keep and repair; repaired and verified
+
+- **Kept:** Sprint 5's stable-placement migration (task 18's corpus
+  move and the deleted two-step transition failure class), the managed
+  sprint and task collections, and transition-carried provenance. No
+  Sprint 5 commit was reverted.
+- **Repaired:** every accepted child finding, through tasks 22–30 —
+  the filesystem boundary, the identity claimant catalog, valid-or-
+  nothing creation with sprint rollback, the canonical representation
+  contract, the LF line-ending policy, degraded-corpus operability,
+  concurrent-sprint cardinality with explicit task placement, the
+  narrowed decision 11, and the reconciled projections and errata —
+  plus task 31's owner-boundary correction.
+- **Reverted:** no Sprint 5 change. Task 31 withdrew only an
+  over-broad remediation introduced during this incident — the
+  root-wide attributes/config extension of decision 14 — not Sprint 5
+  product value. No salvage table was ever required.
+- **Learned:** a safety mechanism and an ownership intervention are
+  different claims. Parser refusal protects Strata's own artifacts
+  and is Strata's to impose; repository-wide Git or config policy
+  reaches into the host repository's namespace and requires explicit
+  ownership — the boundary Henry ratified as archaeology-only.
+  Two further evidence trails are recorded without promotion here:
+  this hold ran on procedural authority once decision 15 removed the
+  accidental mutex, which is idea 20's motivating evidence for an
+  explicit review-hold primitive; and the nine-specimen thread corpus
+  needed repeated manual lifecycle mechanics (front-matter edits plus
+  `git mv`, performed identically for every resolution), which is
+  promotion evidence for idea 11's managed comment threads.
+
+Per condition 9, with conditions 1–8 verified this umbrella resolves
+**repaired and verified** and Sprint 6 closes. The stop-the-line hold
+is lifted.

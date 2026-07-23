@@ -2,8 +2,9 @@
 id: spr_01KY61D615FAC8VVSTD7QXX1DW
 sequence: 6
 kind: sprint
-status: active
+status: closed
 created: 2026-07-22
+closed: 2026-07-22
 ---
 
 # Sprint 6: Post-merge review of Sprint 5
@@ -76,3 +77,39 @@ thread 3's explicit closure protocol, which stays open and blocking
 until its own criteria are met. Sprint 6 remains active. The
 orthogonal review-hold primitive the original rationale gestured at is
 parked as [[ide_01KY64ZPXVR0XRZBHKERBXXJ0C|idea 20]].
+
+## Retrospective (2026-07-22)
+
+This sprint closed ten tasks, 22–31. Every reviewer allegation was
+independently adjudicated — verified, refuted, or narrowed against the
+actual code and history — before any repair was minted, and no
+production-code fix landed during adjudication. Sprint 5 was kept
+rather than reflexively reverted: the keep-and-repair verdict held
+through closure, with most accepted defects predating Sprint 5 and its
+principal value (the deleted two-step transition failure class, stable
+placement, managed sprints and tasks, transition-carried provenance)
+retained in full.
+
+All accepted findings received exactly one owner and executable
+verification: threads 4, 5, 6, 7, and 9 resolved on re-run
+reproduction evidence through tasks 22–30, thread 8 stayed
+accepted-deferred with its seam parked in idea 18, and umbrella
+thread 3 resolved "keep and repair; repaired and verified" after its
+eight closure conditions were checked one by one. Task 31 records the
+late ownership-boundary correction: decision 14's root-wide
+attributes/config reach was an over-broad remediation minted inside
+this incident, narrowed to archaeology-only on Henry's ratification —
+the incident's own output received the same adversarial correction as
+the work it reviewed.
+
+Durable evidence deliberately left parked rather than promoted: the
+hold ran on procedural authority once decision 15 removed the
+accidental single-sprint mutex, which is idea 20's review-hold
+evidence; and every thread resolution repeated the same manual
+front-matter-plus-`git mv` lifecycle mechanics, which is promotion
+evidence for idea 11's managed comment threads.
+
+At close: doctor reports 61 artifacts with no problems, the complete
+suite (348 tests) and `scripts/check.sh` pass, and no unrelated
+product work entered the incident — the full `d98b3631..HEAD` diff
+maps every change to an adjudicated owner.
