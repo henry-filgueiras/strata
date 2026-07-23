@@ -83,6 +83,9 @@ pub fn transition_with_provenance(
 /// (task 23): a stable id claimed by more than one artifact is refused as
 /// `ambiguous-reference` naming every claimant path, before any mutation,
 /// exactly as the `kind:N` form already refuses duplicated sequences.
+/// A unique target must also yield a parseable bound marker (decision 12):
+/// an unaddressable target id or an unrepresentable frozen title is
+/// refused, naming the offending character class, before any mutation.
 fn resolve_edge(root: &Path, key: &'static str, raw: &str) -> Result<(String, String), Error> {
     let kind = crate::edges::EDGE_KINDS
         .iter()
@@ -158,6 +161,44 @@ fn resolve_edge(root: &Path, key: &'static str, raw: &str) -> Result<(String, St
             ),
         });
     };
+    // Decision 12: validate the constructed semantic marker — the decoded
+    // id and the frozen title — through the one marker parser before any
+    // mutation; YAML carrier escaping happens after and changes neither.
+    if let Err(violation) = crate::edges::addressable(&target.id) {
+        return Err(Error::MalformedArtifact {
+            path: root.join(&target.path),
+            reason: format!(
+                "cannot bind `--{key} {raw}`: the target's stable id `{}` \
+                 {}, so it is not addressable as a bound-marker target",
+                target.id,
+                violation.describe()
+            ),
+        });
+    }
+    if let Err(violation) = crate::edges::label_valid(&title) {
+        return Err(Error::MalformedArtifact {
+            path: root.join(&target.path),
+            reason: format!(
+                "cannot freeze a label for `--{key} {raw}`: the target's \
+                 title {}",
+                violation.describe()
+            ),
+        });
+    }
+    let marker = format!("[[{}|{title}]]", target.id);
+    match crate::edges::parse_marker(&marker) {
+        Some(crate::edges::Marker::Bound { id, label }) if id == target.id && label == title => {}
+        _ => {
+            return Err(Error::MalformedArtifact {
+                path: root.join(&target.path),
+                reason: format!(
+                    "cannot bind `--{key} {raw}`: the constructed marker \
+                     `{marker}` does not round-trip through the reference \
+                     grammar"
+                ),
+            });
+        }
+    }
     let label = title.replace('\\', "\\\\").replace('"', "\\\"");
     Ok((key.to_string(), format!("\"[[{}|{label}]]\"", target.id)))
 }
@@ -288,53 +329,89 @@ fn replace(dest: &Path, content: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Rewrite exactly the front-matter `status` value from `from` to `to`,
-/// preserving every other byte.
+/// Locate the canonical mutable `status` carrier, per decision 12
+/// (`dec-canonical-representation`): within the front-matter block,
+/// exactly one line beginning `status:` at column zero whose trimmed
+/// remainder is exactly the artifact's admitted lowercase status
+/// (`expected`). Whitespace around the value is accepted; quoting, inline
+/// comments, duplicate top-level carriers, and any other spelling are not
+/// canonical carriers. Indented spellings never match.
 ///
-/// Only the front-matter block is touched; `status:` lines in the body are
-/// content. The value must be written in the plain unquoted form the
-/// templates produce — exactly one top-level `status:` line whose trimmed
-/// value equals `from`. Anything else (quoted values, trailing comments,
-/// duplicated keys) is refused rather than guessed at, since a wrong splice
-/// would corrupt canonical bytes.
-fn rewrite_status(content: &str, from: Status, to: Status) -> Result<String, String> {
+/// Returns the byte range of the semantic value inside `content`, so a
+/// splice replaces exactly the value and preserves every surrounding
+/// byte. This is the one lexical recognizer shared by the transition
+/// splicer and doctor, so the two surfaces cannot drift; each refusal
+/// names the canonical spelling.
+///
+/// This judges representation conformance only. The canonical parse may
+/// still deserialize a quoted or comment-bearing status semantically;
+/// doctor reports such carriers as noncanonical and transitions refuse
+/// them before writing.
+pub(crate) fn canonical_status_carrier(
+    content: &str,
+    expected: &str,
+) -> Result<std::ops::Range<usize>, String> {
     let (fm_start, fm_end) = front_matter_region(content)
         .ok_or_else(|| "missing front matter: cannot locate the `status` value".to_string())?;
     let front_matter = &content[fm_start..fm_end];
 
-    let mut value_range = None;
+    let mut carriers = Vec::new();
     let mut offset = 0;
     for line in front_matter.split_inclusive('\n') {
         let line_text = line.strip_suffix('\n').unwrap_or(line);
         if let Some(value) = line_text.strip_prefix("status:") {
-            let trimmed = value.trim();
-            if trimmed != from.name() {
-                return Err(format!(
-                    "the front-matter `status` value is not written as plain \
-                     `{}`, so Strata cannot rewrite it precisely; edit the \
-                     file by hand",
-                    from.name()
-                ));
-            }
-            if value_range.is_some() {
-                return Err(
-                    "multiple front-matter `status` lines; repair the file by hand".to_string(),
-                );
-            }
-            let leading = value.len() - value.trim_start().len();
-            let start = fm_start + offset + "status:".len() + leading;
-            value_range = Some(start..start + trimmed.len());
+            carriers.push((offset, value));
         }
         offset += line.len();
     }
 
-    let range = value_range.ok_or_else(|| {
-        format!(
-            "no plain front-matter `status: {}` line found to rewrite; edit \
-             the file by hand",
-            from.name()
-        )
-    })?;
+    let (line_offset, value) = match carriers.as_slice() {
+        [] => {
+            return Err(format!(
+                "no top-level front-matter `status:` line found; the \
+                 canonical mutable carrier is exactly `status: {expected}`"
+            ));
+        }
+        [only] => *only,
+        _ => {
+            return Err(format!(
+                "multiple top-level front-matter `status:` lines; exactly \
+                 one canonical `status: {expected}` carrier is allowed"
+            ));
+        }
+    };
+
+    let trimmed = value.trim();
+    if trimmed != expected {
+        let class = if trimmed.starts_with('"') || trimmed.starts_with('\'') {
+            "is quoted"
+        } else if trimmed
+            .strip_prefix(expected)
+            .is_some_and(|rest| rest.trim_start().starts_with('#'))
+        {
+            "carries an inline comment"
+        } else {
+            "is not the plain admitted status word"
+        };
+        return Err(format!(
+            "the front-matter `status` value {class}; the canonical mutable \
+             carrier is exactly `status: {expected}`"
+        ));
+    }
+    let leading = value.len() - value.trim_start().len();
+    let start = fm_start + line_offset + "status:".len() + leading;
+    Ok(start..start + trimmed.len())
+}
+
+/// Rewrite exactly the front-matter `status` value from `from` to `to`,
+/// preserving every other byte.
+///
+/// Only the front-matter block is touched; `status:` lines in the body are
+/// content. The carrier must be the canonical form the templates produce,
+/// judged by [`canonical_status_carrier`]; anything else is refused rather
+/// than guessed at, since a wrong splice would corrupt canonical bytes.
+fn rewrite_status(content: &str, from: Status, to: Status) -> Result<String, String> {
+    let range = canonical_status_carrier(content, from.name())?;
     let mut rewritten = String::with_capacity(content.len() + to.name().len());
     rewritten.push_str(&content[..range.start]);
     rewritten.push_str(to.name());
@@ -475,11 +552,21 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_status_refuses_quoted_or_commented_values() {
-        for status_line in ["status: \"open\"", "status: 'open'", "status: open # note"] {
+    fn rewrite_status_refuses_quoted_or_commented_values_naming_the_canonical_spelling() {
+        // Task 25: the refusal names the canonical spelling instead of
+        // deferring to a doctor that (formerly) reported nothing.
+        for (status_line, class) in [
+            ("status: \"open\"", "quoted"),
+            ("status: 'open'", "quoted"),
+            ("status: open # note", "inline comment"),
+        ] {
             let content = format!("---\nid: x\n{status_line}\n---\n\n# T\n");
             let err = rewrite_status(&content, Status::Open, Status::Closed).unwrap_err();
-            assert!(err.contains("by hand"), "for {status_line:?}: {err}");
+            assert!(err.contains(class), "for {status_line:?}: {err}");
+            assert!(
+                err.contains("`status: open`"),
+                "the refusal must name the canonical spelling for {status_line:?}: {err}"
+            );
         }
     }
 
@@ -487,7 +574,25 @@ mod tests {
     fn rewrite_status_refuses_when_no_status_line_exists() {
         let err =
             rewrite_status("---\nid: x\n---\n\n# T\n", Status::Open, Status::Closed).unwrap_err();
-        assert!(err.contains("no plain front-matter"), "{err}");
+        assert!(err.contains("no top-level front-matter"), "{err}");
+        assert!(err.contains("`status: open`"), "{err}");
+    }
+
+    #[test]
+    fn duplicate_and_indented_status_carriers_are_refused_or_ignored() {
+        // Decision 12: duplicate top-level carriers are refused; an
+        // indented spelling is not a carrier at all, so only the
+        // column-zero line is spliced.
+        let duplicated = "---\nid: x\nstatus: open\nstatus: open\n---\n\n# T\n";
+        let err = rewrite_status(duplicated, Status::Open, Status::Closed).unwrap_err();
+        assert!(err.contains("multiple top-level"), "{err}");
+
+        let indented = "---\nid: x\nstatus: open\nnested:\n  status: parked\n---\n\n# T\n";
+        let rewritten = rewrite_status(indented, Status::Open, Status::Closed).unwrap();
+        assert_eq!(
+            rewritten, "---\nid: x\nstatus: closed\nnested:\n  status: parked\n---\n\n# T\n",
+            "the indented spelling is content, not a carrier"
+        );
     }
 
     #[test]
@@ -605,6 +710,124 @@ mod tests {
             original,
             "refusal must precede any mutation"
         );
+    }
+
+    fn seed_decision_titled(root: &Path, id: &str, title: &str) {
+        seed(
+            root,
+            "archaeology/decisions",
+            "0001-target.md",
+            &format!(
+                "---\nid: {id}\nsequence: 1\nkind: decision\nstatus: accepted\ncreated: 2026-07-20\n---\n\n# {title}\n"
+            ),
+        );
+    }
+
+    #[test]
+    fn binding_refuses_an_unaddressable_unique_target_before_mutation() {
+        // Task 25: a unique target whose decoded id fails the decision 12
+        // addressability contract is refused, naming the offending class,
+        // with the source artifact byte-identical.
+        let tmp = temp_repo();
+        let original = rich_dragon("open");
+        seed(tmp.path(), DRAGONS_DIR, "0001-rich-dragon.md", &original);
+        seed_decision_titled(tmp.path(), "dec spacey", "Spacey decision");
+
+        let err = transition_with_provenance(
+            tmp.path(),
+            &read::DRAGON,
+            Selector::Sequence(1),
+            "dragon:1",
+            Status::Closed,
+            Some(("resolved-by", "dec spacey")),
+        )
+        .unwrap_err();
+
+        let Error::MalformedArtifact { path, reason } = err else {
+            panic!("expected malformed-artifact, got {err:?}");
+        };
+        assert!(path.ends_with("0001-target.md"), "{path:?}");
+        assert!(
+            reason.contains("whitespace"),
+            "must name the class: {reason}"
+        );
+        assert!(reason.contains("not addressable"), "{reason}");
+        assert_eq!(
+            fs::read_to_string(tmp.path().join(DRAGONS_DIR).join("0001-rich-dragon.md")).unwrap(),
+            original,
+            "refusal must precede any mutation"
+        );
+    }
+
+    #[test]
+    fn binding_refuses_a_double_bracket_title_before_mutation() {
+        let tmp = temp_repo();
+        let original = rich_dragon("open");
+        seed(tmp.path(), DRAGONS_DIR, "0001-rich-dragon.md", &original);
+        seed_decision_titled(tmp.path(), "dec-brackets", "The [[worst]] title");
+
+        let err = transition_with_provenance(
+            tmp.path(),
+            &read::DRAGON,
+            Selector::Sequence(1),
+            "dragon:1",
+            Status::Closed,
+            Some(("resolved-by", "dec-brackets")),
+        )
+        .unwrap_err();
+
+        let Error::MalformedArtifact { reason, .. } = err else {
+            panic!("expected malformed-artifact, got {err:?}");
+        };
+        assert!(reason.contains("`]]`"), "must name the class: {reason}");
+        assert_eq!(
+            fs::read_to_string(tmp.path().join(DRAGONS_DIR).join("0001-rich-dragon.md")).unwrap(),
+            original,
+            "refusal must precede any mutation"
+        );
+    }
+
+    #[test]
+    fn binding_freezes_a_single_bracket_title_that_round_trips() {
+        // Decision 12: decision 10 as written — a single `]` in the frozen
+        // label is legal, and the constructed marker round-trips through
+        // the parser before the write.
+        let tmp = temp_repo();
+        seed(
+            tmp.path(),
+            DRAGONS_DIR,
+            "0001-rich-dragon.md",
+            &rich_dragon("open"),
+        );
+        seed_decision_titled(tmp.path(), "dec-bracket", "Handle the arr[0] edge case");
+
+        let done = transition_with_provenance(
+            tmp.path(),
+            &read::DRAGON,
+            Selector::Sequence(1),
+            "dragon:1",
+            Status::Closed,
+            Some(("resolved-by", "dec-bracket")),
+        )
+        .unwrap();
+
+        assert_eq!(done.to, Status::Closed);
+        let content =
+            fs::read_to_string(tmp.path().join(DRAGONS_DIR).join("0001-rich-dragon.md")).unwrap();
+        assert!(
+            content.contains("resolved-by: \"[[dec-bracket|Handle the arr[0] edge case]]\""),
+            "{content}"
+        );
+        // The written marker parses back to exactly the intended id and
+        // frozen title, and the repository stays healthy.
+        assert_eq!(
+            crate::edges::parse_marker("[[dec-bracket|Handle the arr[0] edge case]]"),
+            Some(crate::edges::Marker::Bound {
+                id: "dec-bracket",
+                label: "Handle the arr[0] edge case",
+            })
+        );
+        assert!(crate::doctor::check(tmp.path()).unwrap().healthy());
     }
 
     #[test]

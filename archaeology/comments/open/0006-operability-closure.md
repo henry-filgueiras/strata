@@ -363,3 +363,68 @@ contract lands on this thread's evidence and does not wait for it.
 
 Per the stop-the-line protocol, no production code changes in this
 round either.
+
+## cme-operability-closure-remediation-progress-1
+
+- author: agent, Anthropic, as "Claude"
+- created: 2026-07-22
+
+### Partial remediation: cases B, C, and E closed by task 25
+
+[[tsk_01KY6364DV39W0DZ3N0NF8GBGB|task 25]] is closed, implementing
+decision 12 ([[dec-canonical-representation|canonical
+representation]]). Its scope was exactly cases B, C, and E; the
+evidence per case:
+
+**B — reader-valid status is mutation-invalid: closed.** One lexical
+recognizer, `transition::canonical_status_carrier`, is now shared by
+the splicer and doctor, so the two surfaces cannot drift. Quoted and
+comment-bearing statuses still deserialize semantically; doctor
+reports them as error-severity `non-canonical-artifact`; the
+transition still refuses them, byte-preserving, and its refusal names
+the canonical spelling (`status: <word>`) — the doctor referral this
+case convicted as false is now truthful. Accepted whitespace around a
+plain value stays byte-preserved. Evidence:
+`quoted_status_parses_semantically_but_is_non_canonical_and_untransitionable`,
+`noncanonical_status_carriers_are_findings_on_parseable_artifacts`,
+`duplicate_and_indented_status_carriers_are_refused_or_ignored`,
+`accepted_whitespace_around_a_status_value_is_not_a_finding`.
+
+**C — valid opaque ids are not addressable everywhere: closed.**
+Decision 12's addressability contract (`edges::addressable`: no `:`,
+Unicode whitespace, `#`, `|`, `]` over the decoded value) is enforced
+at the CLI address surface (refusal naming the class), at binding
+(refused pre-mutation, bytes untouched — the reproduced `--resolved-by
+"dec spacey"` corruption is dead), and by doctor
+(`non-canonical-artifact` on every admitted claimant, including
+unmanaged decisions), so doctor-green implies addressable. Identity
+validity is unchanged and the id documentation narrowing is explicit.
+Evidence: `addressability_classifies_each_excluded_character_class`,
+`unaddressable_bare_ids_are_refused_naming_the_class`,
+`binding_to_a_whitespace_bearing_id_is_refused_and_doctor_agrees`,
+`unaddressable_claimant_ids_are_non_canonical_findings`,
+`every_current_id_shape_remains_addressable`.
+
+**E — provenance binding can create a doctor-red artifact: closed.**
+`parse_marker` now implements decision 10 as written (suffix-anchored
+label parse; a single `]` is legal, `]]` and newlines are not), and
+`resolve_edge` round-trips the constructed semantic marker through
+that parser before any mutation: the reproduced `arr[0]`-title state
+now binds successfully and stays doctor-green, while a `]]`-bearing
+title refuses pre-mutation naming the class. Evidence:
+`parse_marker_accepts_single_brackets_in_labels_and_round_trips`,
+`binding_freezes_a_single_bracket_title_that_round_trips`,
+`binding_to_a_single_bracket_title_succeeds_and_doctor_stays_green`,
+`binding_to_a_double_bracket_title_is_refused_before_mutation`.
+
+Closure properties 2 and 3 now hold for the representation surface:
+doctor-green implies stably addressable and transitionable, and the
+binding path can no longer mutate the repository doctor-red.
+
+### Gate status
+
+This thread stays **open and blocking**. Cases A and F await
+[[tsk_01KY6364DMJ7DPEWCAK0ZKDNHR|task 24]], case D awaits
+[[tsk_01KY6364E105F7AWT7RAZ264WZ|task 26]], and case G awaits
+[[tsk_01KY640RFXZJMWZ2T8W9B628AA|task 27]]. Resolution follows the
+last of those verifications.

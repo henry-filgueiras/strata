@@ -21,6 +21,12 @@
 //! admitted claim is retained with an explicit disposition, and an id is
 //! classified as missing, unique, or ambiguous — no consumer selects
 //! among ambiguous claimants.
+//!
+//! Identity validity and addressability are distinct layers (decision 12):
+//! any non-empty id is a valid identity, but only [`addressable`] ids may
+//! serve as stable-id addresses or bound-marker targets. Addressability is
+//! enforced at address and binding surfaces and diagnosed by doctor; it is
+//! never a harvest filter.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -28,6 +34,116 @@ use std::path::{Path, PathBuf};
 
 use crate::doctor::Severity;
 use crate::read::{Status, Summary};
+
+/// The character class that makes a stable id unaddressable, per decision
+/// 12 (`dec-canonical-representation`).
+///
+/// Every non-empty id remains a valid identity (decision 2); this enum
+/// classifies only why an id cannot serve as a stable-id address (a CLI
+/// id argument) or a bound-marker target. Diagnostics name the class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdViolation {
+    /// The id is empty (not an identity at all).
+    Empty,
+    /// `:` — the CLI and reference grammar route every `:`-bearing
+    /// reference to the `kind:N` sequence parser.
+    Colon,
+    /// Any character with the Unicode whitespace property, including
+    /// newlines.
+    Whitespace,
+    /// `#` — reserved in the target grammar for future fragments.
+    Hash,
+    /// `|` — the marker's target/label separator.
+    Pipe,
+    /// `]` — closes reference markers; excluding the single `]` from
+    /// targets keeps the suffix-anchored label parse unambiguous.
+    Bracket,
+}
+
+impl IdViolation {
+    /// Human fragment naming the offending character class, phrased to
+    /// follow "the id ...".
+    pub fn describe(self) -> &'static str {
+        match self {
+            IdViolation::Empty => "is empty",
+            IdViolation::Colon => {
+                "contains `:`, which the reference grammar reserves for \
+                 `kind:N` sequence references"
+            }
+            IdViolation::Whitespace => "contains whitespace",
+            IdViolation::Hash => {
+                "contains `#`, which the target grammar reserves for future \
+                 fragment references"
+            }
+            IdViolation::Pipe => "contains `|`, the marker target/label separator",
+            IdViolation::Bracket => "contains `]`, which closes reference markers",
+        }
+    }
+}
+
+/// Classify one decoded id against the decision 12 addressability
+/// contract: addressable ids are non-empty and contain no `:`, Unicode
+/// whitespace, `#`, `|`, or `]`.
+///
+/// This judges the decoded string value — `id: x` and `id: "x"` claim the
+/// same id — and is applied at address and binding surfaces only, never as
+/// a harvest filter: non-addressable ids stay valid identities and stay in
+/// the claimant catalog.
+pub fn addressable(id: &str) -> Result<(), IdViolation> {
+    if id.is_empty() {
+        return Err(IdViolation::Empty);
+    }
+    for character in id.chars() {
+        match character {
+            ':' => return Err(IdViolation::Colon),
+            '#' => return Err(IdViolation::Hash),
+            '|' => return Err(IdViolation::Pipe),
+            ']' => return Err(IdViolation::Bracket),
+            c if c.is_whitespace() => return Err(IdViolation::Whitespace),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Why a string cannot be a marker label, per decision 10's grammar as
+/// decision 12 confirms it: labels may contain anything — including a
+/// single `]` — except `]]` and newlines, and must be non-empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LabelViolation {
+    /// The label is empty.
+    Empty,
+    /// The label contains `]]`, the marker's closing delimiter.
+    DoubleBracket,
+    /// The label contains a newline; markers are one line.
+    Newline,
+}
+
+impl LabelViolation {
+    /// Human fragment naming the offending class, phrased to follow
+    /// "the label ...".
+    pub fn describe(self) -> &'static str {
+        match self {
+            LabelViolation::Empty => "is empty",
+            LabelViolation::DoubleBracket => "contains `]]`, the closing marker delimiter",
+            LabelViolation::Newline => "contains a newline; markers are one line",
+        }
+    }
+}
+
+/// Classify one string against the marker label grammar.
+pub fn label_valid(label: &str) -> Result<(), LabelViolation> {
+    if label.is_empty() {
+        return Err(LabelViolation::Empty);
+    }
+    if label.contains("]]") {
+        return Err(LabelViolation::DoubleBracket);
+    }
+    if label.contains('\n') {
+        return Err(LabelViolation::Newline);
+    }
+    Ok(())
+}
 
 /// One parsed reference marker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,35 +160,37 @@ pub enum Marker<'a> {
 
 /// Parse one reference marker, or `None` when the text is not a marker.
 ///
-/// Grammar per decision 10: `[[` target (`|` label)? `]]` on one line;
-/// targets contain no whitespace, `|`, `#` (reserved for future
-/// fragments), or `]]`; a target containing `:` is sugar, anything else is
-/// a stable id; bound markers require a nonempty label, sugar may omit it.
+/// Grammar per decisions 10 and 12: `[[` target (`|` label)? `]]` on one
+/// line, anchored on the final closing `]]`. The label runs from the first
+/// `|` to that final `]]` and may contain anything but `]]` and newlines —
+/// in particular a single `]` is legal, so the raw text of such a marker
+/// ends in `]]]`. A target containing `:` is sugar (`kind:N`, label
+/// optional); anything else is a stable id obeying the [`addressable`]
+/// contract, with a mandatory label.
 pub fn parse_marker(text: &str) -> Option<Marker<'_>> {
     let inner = text.strip_prefix("[[")?.strip_suffix("]]")?;
-    if inner.contains(']') || inner.contains('\n') {
+    if inner.contains('\n') {
         return None;
     }
     let (target, label) = match inner.split_once('|') {
         Some((target, label)) => (target, Some(label)),
         None => (inner, None),
     };
-    if target.is_empty()
-        || target.contains('#')
-        || target.contains('|')
-        || target.chars().any(char::is_whitespace)
-    {
-        return None;
-    }
-    if label.is_some_and(str::is_empty) {
+    if label.is_some_and(|label| label_valid(label).is_err()) {
         return None;
     }
     if target.contains(':') {
+        if target.contains('#') || target.contains(']') || target.chars().any(char::is_whitespace) {
+            return None;
+        }
         Some(Marker::Sugar {
             reference: target,
             label,
         })
     } else {
+        if addressable(target).is_err() {
+            return None;
+        }
         Some(Marker::Bound {
             id: target,
             label: label?,
@@ -582,6 +700,99 @@ mod tests {
     }
 
     #[test]
+    fn addressability_classifies_each_excluded_character_class() {
+        // Decision 12: the exact excluded classes, judged over the decoded
+        // value, each named for diagnostics. A newline is whitespace.
+        assert_eq!(addressable(""), Err(IdViolation::Empty));
+        assert_eq!(addressable("drg:odd"), Err(IdViolation::Colon));
+        assert_eq!(addressable("dec spacey"), Err(IdViolation::Whitespace));
+        assert_eq!(addressable("dec\tspacey"), Err(IdViolation::Whitespace));
+        assert_eq!(addressable("dec\u{2009}thin"), Err(IdViolation::Whitespace));
+        assert_eq!(addressable("dec\nline"), Err(IdViolation::Whitespace));
+        assert_eq!(addressable("dec#frag"), Err(IdViolation::Hash));
+        assert_eq!(addressable("dec|pipe"), Err(IdViolation::Pipe));
+        assert_eq!(addressable("dec]close"), Err(IdViolation::Bracket));
+        // Each class names itself in prose.
+        for (id, needle) in [
+            ("drg:odd", "`:`"),
+            ("dec spacey", "whitespace"),
+            ("dec#frag", "`#`"),
+            ("dec|pipe", "`|`"),
+            ("dec]close", "`]`"),
+        ] {
+            let described = addressable(id).unwrap_err().describe();
+            assert!(described.contains(needle), "{id}: {described}");
+        }
+    }
+
+    #[test]
+    fn every_current_id_shape_remains_addressable() {
+        // Decision 12: every generated shape and every hand-authored shape
+        // in this corpus conforms as-is — no migration.
+        for id in [
+            "drg_01KY169X7W0YXJ5QFV4D1MK4FB",
+            "tsk_01KY6364DV39W0DZ3N0NF8GBGB",
+            "spr_01KY61D615FAC8VVSTD7QXX1DW",
+            "ide_01KY5X7C56KBFWJJJKHTEXXQXV",
+            "drg-bootstrap-branch-collisions",
+            "dec-canonical-representation",
+            "idea-strict-doctor",
+            "cmt-s5-global-identity-catalog",
+            "log-0001",
+        ] {
+            assert_eq!(addressable(id), Ok(()), "{id} must stay addressable");
+        }
+    }
+
+    #[test]
+    fn label_validity_names_the_offending_class() {
+        assert_eq!(label_valid("Handle the arr[0] edge case"), Ok(()));
+        assert_eq!(label_valid("ends with ]"), Ok(()));
+        assert_eq!(label_valid("a]b]c"), Ok(()), "non-adjacent `]`s are legal");
+        assert_eq!(label_valid(""), Err(LabelViolation::Empty));
+        assert_eq!(label_valid("a]]b"), Err(LabelViolation::DoubleBracket));
+        assert_eq!(label_valid("line\nbreak"), Err(LabelViolation::Newline));
+        assert!(
+            LabelViolation::DoubleBracket.describe().contains("`]]`"),
+            "the class must be nameable"
+        );
+        assert!(LabelViolation::Newline.describe().contains("newline"));
+    }
+
+    #[test]
+    fn parse_marker_accepts_single_brackets_in_labels_and_round_trips() {
+        // Decisions 10 and 12: the label runs from the first `|` to the
+        // final closing `]]`; a single `]` is legal anywhere in it, so a
+        // label ending in `]` makes the raw text end in `]]]`.
+        for (raw, id, label) in [
+            (
+                "[[dec-bracket|Handle the arr[0] edge case]]",
+                "dec-bracket",
+                "Handle the arr[0] edge case",
+            ),
+            ("[[dec-bracket|ends with ]]]", "dec-bracket", "ends with ]"),
+            ("[[dec-bracket|a]b]c]]", "dec-bracket", "a]b]c"),
+        ] {
+            assert_eq!(
+                parse_marker(raw),
+                Some(Marker::Bound { id, label }),
+                "must parse {raw:?}"
+            );
+            // Round-trip: reconstructing from the parsed parts yields the
+            // same raw text.
+            assert_eq!(format!("[[{id}|{label}]]"), raw);
+        }
+    }
+
+    #[test]
+    fn parse_marker_rejects_bracket_bearing_targets() {
+        // The single `]` is legal only in labels; targets obey the
+        // addressability contract (bound) or the sugar grammar.
+        assert_eq!(parse_marker("[[a]b|label]]"), None);
+        assert_eq!(parse_marker("[[dragon:3]x]]"), None);
+    }
+
+    #[test]
     fn parse_marker_rejects_non_markers() {
         for bad in [
             "",
@@ -931,6 +1142,36 @@ mod tests {
         ];
         assert_eq!(forward.0, sorted);
         assert_eq!(forward, reverse);
+    }
+
+    #[test]
+    fn non_addressable_claimants_stay_catalogued_and_ambiguous() {
+        // Decision 12: addressability is never a harvest filter. Two
+        // claimants of a whitespace-bearing id are still duplicate
+        // evidence, resolved as ambiguous.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("archaeology/decisions");
+        fs::create_dir_all(&dir).unwrap();
+        for name in ["0001-a.md", "0002-b.md"] {
+            fs::write(
+                dir.join(name),
+                "---\nid: dec spacey\nkind: decision\n---\n\n# Spacey\n",
+            )
+            .unwrap();
+        }
+
+        assert!(addressable("dec spacey").is_err());
+        let catalog = Catalog::build(tmp.path());
+        let Resolution::Ambiguous(claimants) = catalog.resolve("dec spacey") else {
+            panic!("both unaddressable claimants must be retained and ambiguous");
+        };
+        assert_eq!(
+            claimant_paths(&claimants),
+            vec![
+                "archaeology/decisions/0001-a.md",
+                "archaeology/decisions/0002-b.md",
+            ]
+        );
     }
 
     #[test]

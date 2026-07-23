@@ -287,6 +287,95 @@ fn human_and_json_output_agree_on_duplicate_claimant_classification() {
 }
 
 #[test]
+fn human_and_json_output_agree_on_representation_findings() {
+    // Task 25: a noncanonical status carrier and an unaddressable
+    // unmanaged id. Both projections must use the same classification,
+    // severity, paths, details, and deterministic ordering.
+    let tmp = init_repo();
+    fs::write(
+        tmp.path().join(DRAGONS_DIR).join("0001-quoted.md"),
+        dragon_markdown("drg-quoted", 1, "\"open\"", "Quoted"),
+    )
+    .unwrap();
+    fs::create_dir_all(tmp.path().join("archaeology/decisions")).unwrap();
+    fs::write(
+        tmp.path().join("archaeology/decisions/0001-spacey.md"),
+        "---\nid: dec spacey\nsequence: 1\nkind: decision\nstatus: accepted\ncreated: 2026-07-20\n---\n\n# Spacey decision\n",
+    )
+    .unwrap();
+
+    let human = strata_in(tmp.path(), &["doctor"]);
+    assert_eq!(human.status.code(), Some(9), "{}", stderr(&human));
+
+    let json = strata_in(tmp.path(), &["doctor", "--json"]);
+    assert_eq!(json.status.code(), Some(9), "{}", stderr(&json));
+    let findings: serde_json::Value = serde_json::from_str(stdout(&json).trim()).unwrap();
+    let findings = findings.as_array().unwrap();
+    assert_eq!(findings.len(), 2, "{findings:?}");
+    // Path-sorted: decisions before dragons.
+    assert_eq!(findings[0]["problem"], "non-canonical-artifact");
+    assert_eq!(findings[0]["path"], "archaeology/decisions/0001-spacey.md");
+    assert_eq!(findings[0]["severity"], "error");
+    assert_eq!(findings[1]["problem"], "non-canonical-artifact");
+    assert_eq!(findings[1]["path"], "archaeology/dragons/0001-quoted.md");
+    assert_eq!(findings[1]["severity"], "error");
+
+    let report = stdout(&human);
+    for finding in findings {
+        let detail = finding["detail"].as_str().unwrap();
+        assert!(
+            report.contains(detail),
+            "human output must carry the same detail:\n{report}\nvs\n{detail}"
+        );
+    }
+    assert!(
+        stderr(&human).contains("2 problem(s)"),
+        "{}",
+        stderr(&human)
+    );
+}
+
+#[test]
+fn quoted_status_parses_semantically_but_is_non_canonical_and_untransitionable() {
+    // Task 25 / thread 6 case B closure: the spelling still deserializes
+    // (list works), doctor reports it, the transition refuses it naming
+    // the canonical spelling, and the bytes never change — the two
+    // surfaces agree instead of contradicting each other.
+    let tmp = init_repo();
+    let content = dragon_markdown("drg-quoted", 1, "\"open\"", "Quoted");
+    fs::write(
+        tmp.path().join(DRAGONS_DIR).join("0001-quoted.md"),
+        &content,
+    )
+    .unwrap();
+
+    let list = strata_in(tmp.path(), &["list", "dragons"]);
+    assert!(list.status.success(), "{}", stderr(&list));
+    assert!(stdout(&list).contains("open"), "{}", stdout(&list));
+
+    let doctor = strata_in(tmp.path(), &["doctor"]);
+    assert_eq!(doctor.status.code(), Some(9), "{}", stderr(&doctor));
+    assert!(
+        stdout(&doctor).contains("non-canonical-artifact"),
+        "{}",
+        stdout(&doctor)
+    );
+
+    let close = strata_in(tmp.path(), &["close", "dragon:1"]);
+    assert_eq!(close.status.code(), Some(5), "{}", stderr(&close));
+    assert!(
+        stderr(&close).contains("`status: open`"),
+        "the refusal must name the canonical spelling: {}",
+        stderr(&close)
+    );
+    assert_eq!(
+        fs::read_to_string(tmp.path().join(DRAGONS_DIR).join("0001-quoted.md")).unwrap(),
+        content,
+        "a refused transition leaves the bytes unchanged"
+    );
+}
+
+#[test]
 fn doctor_outside_a_repository_is_a_missing_repository_error() {
     let tmp = tempfile::tempdir().unwrap();
 

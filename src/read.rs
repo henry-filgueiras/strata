@@ -263,8 +263,12 @@ impl fmt::Display for Status {
 /// paths never appear in projections.
 #[derive(Debug, Clone, Serialize)]
 pub struct Summary {
-    /// Stable opaque identity. Generated IDs are prefixed ULIDs, but any
-    /// non-empty string is valid; readers must not assume ULID structure.
+    /// Stable opaque identity. Any non-empty string is a valid identity —
+    /// generated IDs are prefixed ULIDs, but readers must not assume ULID
+    /// structure. Only *addressable* ids (decision 12: non-empty, no `:`,
+    /// whitespace, `#`, `|`, or `]` in the decoded value) can serve as CLI
+    /// stable-id addresses or bound-marker targets; doctor reports the
+    /// rest as `non-canonical-artifact`.
     pub id: String,
     /// Collection-scoped display sequence, as in `dragon:7`.
     pub sequence: u32,

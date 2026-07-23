@@ -51,8 +51,10 @@ pub enum Severity {
 pub struct Finding {
     /// Provisional kebab-case problem code: `malformed-artifact`,
     /// `unreadable-artifact`, `artifact-conflict`, `duplicate-id`,
-    /// `duplicate-sequence`, or a typed-edge code (`invalid-edge`,
-    /// `dangling-edge`, `ambiguous-edge`, `unbound-edge`, `stale-edge`).
+    /// `duplicate-sequence`, `non-canonical-artifact` (a parseable file
+    /// whose representation the decision 12 contract excludes), or a
+    /// typed-edge code (`invalid-edge`, `dangling-edge`, `ambiguous-edge`,
+    /// `unbound-edge`, `stale-edge`).
     pub problem: &'static str,
     /// Repository-relative path of the affected file or directory.
     pub path: String,
@@ -105,6 +107,7 @@ pub fn check(root: &Path) -> Result<Report, Error> {
     let artifacts_checked = artifacts.len();
     let catalog = crate::edges::Catalog::build(root);
     findings.extend(duplicate_findings(&artifacts, &catalog));
+    findings.extend(representation_findings(&artifacts, &catalog));
 
     // A task's `sprint:` field must name an existing sprint whose
     // containment directory holds the file (decision 11).
@@ -644,6 +647,57 @@ fn duplicate_findings(artifacts: &[Artifact], catalog: &crate::edges::Catalog) -
                     "display sequence {kind}:{sequence} is shared by: {}",
                     paths.join(", ")
                 ),
+                severity: Severity::Error,
+            });
+        }
+    }
+    findings
+}
+
+/// Representation conformance per decision 12: contract-excluded
+/// representations on otherwise parseable artifacts, distinct from
+/// `malformed-artifact` because the files parse.
+///
+/// Two checks share the `non-canonical-artifact` vocabulary:
+///
+/// - every admitted identity claimant — managed, unmanaged/probe-only,
+///   or rejected alike; disposition and addressability are separate —
+///   whose decoded id fails the addressability contract, so that
+///   doctor-green implies addressable everywhere binding might look;
+/// - every cleanly parsed managed artifact whose mutable `status`
+///   carrier is not the canonical form the transition splicer accepts
+///   (judged by the one shared recognizer), so that doctor-green implies
+///   transitionable.
+fn representation_findings(
+    artifacts: &[Artifact],
+    catalog: &crate::edges::Catalog,
+) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    for claimant in catalog.claimants() {
+        if let Err(violation) = crate::edges::addressable(&claimant.claim.id) {
+            findings.push(Finding {
+                problem: "non-canonical-artifact",
+                path: claimant.claim.path.clone(),
+                detail: format!(
+                    "stable id `{}` {}; it remains a valid identity, but it \
+                     cannot serve as a stable-id address or bound-marker \
+                     target (decision 12 addressability)",
+                    claimant.claim.id,
+                    violation.describe()
+                ),
+                severity: Severity::Error,
+            });
+        }
+    }
+    for artifact in artifacts {
+        if let Err(reason) = crate::transition::canonical_status_carrier(
+            &artifact.content,
+            artifact.summary.status.name(),
+        ) {
+            findings.push(Finding {
+                problem: "non-canonical-artifact",
+                path: artifact.summary.path.clone(),
+                detail: reason,
                 severity: Severity::Error,
             });
         }
@@ -1622,6 +1676,162 @@ mod tests {
                 .any(|finding| finding.problem == "duplicate-id"),
             "{:?}",
             report.findings
+        );
+    }
+
+    #[test]
+    fn unaddressable_claimant_ids_are_non_canonical_findings() {
+        // Task 25: a colon-bearing managed id (quoted — addressability
+        // judges the decoded value) and a whitespace-bearing unmanaged
+        // decision id both draw error findings; decisions do not enter
+        // `artifacts_checked`.
+        let tmp = temp_repo();
+        write_dragon(
+            tmp.path(),
+            DRAGONS_DIR,
+            "0001-odd.md",
+            &dragon_markdown("\"drg:odd\"", 1, "open", "Odd"),
+        );
+        let decisions = tmp.path().join("archaeology/decisions");
+        fs::create_dir_all(&decisions).unwrap();
+        fs::write(
+            decisions.join("0001-spacey.md"),
+            "---\nid: dec spacey\nsequence: 1\nkind: decision\nstatus: accepted\ncreated: 2026-07-20\n---\n\n# Spacey decision\n",
+        )
+        .unwrap();
+
+        let report = check(tmp.path()).unwrap();
+
+        assert_eq!(report.artifacts_checked, 1);
+        assert_eq!(
+            problems(&report),
+            vec![
+                (
+                    "non-canonical-artifact",
+                    "archaeology/decisions/0001-spacey.md"
+                ),
+                ("non-canonical-artifact", "archaeology/dragons/0001-odd.md"),
+            ]
+        );
+        assert!(
+            report.findings[0].detail.contains("whitespace"),
+            "{}",
+            report.findings[0].detail
+        );
+        assert!(
+            report.findings[1].detail.contains("`:`"),
+            "{}",
+            report.findings[1].detail
+        );
+    }
+
+    #[test]
+    fn quoting_an_id_alone_is_not_a_finding() {
+        // Decision 12: YAML quoting of an id is not noncanonical — the
+        // decoded value is the identity.
+        let tmp = temp_repo();
+        write_dragon(
+            tmp.path(),
+            DRAGONS_DIR,
+            "0001-fine.md",
+            &dragon_markdown("\"drg-fine\"", 1, "open", "Fine"),
+        );
+
+        let report = check(tmp.path()).unwrap();
+
+        assert!(report.healthy(), "{:?}", report.findings);
+        assert!(report.findings.is_empty(), "{:?}", report.findings);
+    }
+
+    #[test]
+    fn noncanonical_status_carriers_are_findings_on_parseable_artifacts() {
+        // Task 25 / thread 6 case B: quoted and comment-bearing statuses
+        // still deserialize (the artifacts are checked), but the mutable
+        // carrier is noncanonical — reported so doctor-green implies
+        // transitionable.
+        let tmp = temp_repo();
+        write_dragon(
+            tmp.path(),
+            DRAGONS_DIR,
+            "0001-quoted.md",
+            &dragon_markdown("drg-quoted", 1, "\"open\"", "Quoted"),
+        );
+        write_dragon(
+            tmp.path(),
+            DRAGONS_DIR,
+            "0002-commented.md",
+            &dragon_markdown("drg-commented", 2, "open # note", "Commented"),
+        );
+
+        let report = check(tmp.path()).unwrap();
+
+        assert_eq!(
+            report.artifacts_checked, 2,
+            "both artifacts still parse semantically: {:?}",
+            report.findings
+        );
+        assert_eq!(
+            problems(&report),
+            vec![
+                (
+                    "non-canonical-artifact",
+                    "archaeology/dragons/0001-quoted.md"
+                ),
+                (
+                    "non-canonical-artifact",
+                    "archaeology/dragons/0002-commented.md"
+                ),
+            ]
+        );
+        for finding in &report.findings {
+            assert!(
+                finding.detail.contains("`status: open`"),
+                "the finding must name the canonical spelling: {}",
+                finding.detail
+            );
+        }
+    }
+
+    #[test]
+    fn accepted_whitespace_around_a_status_value_is_not_a_finding() {
+        let tmp = temp_repo();
+        write_dragon(
+            tmp.path(),
+            DRAGONS_DIR,
+            "0001-padded.md",
+            "---\nid: drg-padded\nsequence: 1\nkind: dragon\nstatus:   open  \ncreated: 2026-07-20\n---\n\n# Padded\n",
+        );
+
+        let report = check(tmp.path()).unwrap();
+
+        assert!(report.healthy(), "{:?}", report.findings);
+        assert!(report.findings.is_empty(), "{:?}", report.findings);
+    }
+
+    #[test]
+    fn unaddressable_duplicate_claimants_draw_both_findings() {
+        // Decision 12: addressability never filters the catalog — two
+        // claimants of an unaddressable id remain duplicate evidence.
+        let tmp = temp_repo();
+        let decisions = tmp.path().join("archaeology/decisions");
+        fs::create_dir_all(&decisions).unwrap();
+        for name in ["0001-a.md", "0002-b.md"] {
+            fs::write(
+                decisions.join(name),
+                "---\nid: dec spacey\nkind: decision\n---\n\n# Twin\n",
+            )
+            .unwrap();
+        }
+
+        let report = check(tmp.path()).unwrap();
+
+        assert_eq!(
+            problems(&report),
+            vec![
+                ("duplicate-id", "archaeology/decisions/0001-a.md"),
+                ("non-canonical-artifact", "archaeology/decisions/0001-a.md"),
+                ("non-canonical-artifact", "archaeology/decisions/0002-b.md"),
+            ]
         );
     }
 

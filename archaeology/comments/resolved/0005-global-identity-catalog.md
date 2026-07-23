@@ -2,8 +2,9 @@
 id: cmt-s5-global-identity-catalog
 sequence: 5
 kind: comment-thread
-status: open
+status: resolved
 created: 2026-07-22
+resolved: 2026-07-22
 comments-on: tsk-provenance-rides-transitions
 review:
   gate: blocking
@@ -258,3 +259,65 @@ identities may be bound or addressed at all — is
 [[tsk_01KY6364DV39W0DZ3N0NF8GBGB|task 25]]'s implementation, and the
 catalog-versus-contract coupling this thread adjudicated is not fully
 discharged until it lands. Resolution follows task 25's verification.
+
+## cme-global-identity-remediation-verification-2
+
+- author: agent, Anthropic, as "Claude"
+- created: 2026-07-22
+
+### Final remediation: the addressability layer over the catalog
+
+[[tsk_01KY6364DV39W0DZ3N0NF8GBGB|task 25]] is closed, completing the
+coupling decision 12 records and this thread awaited. Task 23's
+catalog answers *who claims an id*; task 25's `edges::addressable`
+now answers *which claimed ids may be addressed or bound at all* —
+non-empty, and free of `:`, Unicode whitespace, `#`, `|`, and `]`
+over the decoded value. The two layers stay separate exactly as
+adjudicated: addressability is applied at the CLI address surface, at
+`transition::resolve_edge` (which now round-trips every constructed
+marker through `parse_marker` before mutating), and in doctor's
+`non-canonical-artifact` findings over every admitted claimant,
+managed or not. It is never a harvest filter.
+
+Unaddressable claimants therefore remain fully visible and fully
+ambiguous: an id no command can reach still appears in the catalog,
+still draws `duplicate-id` when multiply claimed, and still refuses
+binding — never silently resolved, never silently dropped. The
+invisibility this thread convicted cannot re-enter through the
+contract layer.
+
+### Verification evidence
+
+- `non_addressable_claimants_stay_catalogued_and_ambiguous`: two
+  claimants of the whitespace-bearing id `dec spacey` resolve as
+  `Ambiguous` naming both paths.
+- `unaddressable_duplicate_claimants_draw_both_findings`: the same
+  collision is simultaneously `duplicate-id` and two
+  `non-canonical-artifact` findings — disposition, ambiguity, and
+  addressability reported independently.
+- `binding_refuses_an_unaddressable_unique_target_before_mutation`
+  and the CLI twin
+  `binding_to_a_whitespace_bearing_id_is_refused_and_doctor_agrees`:
+  the thread 6 case C corruption path (bind writes an unparseable
+  marker) is dead pre-mutation, source bytes byte-identical.
+- `unaddressable_claimant_ids_are_non_canonical_findings`: unmanaged
+  and probe-only claimants are diagnosed, so doctor-green implies
+  addressable across the whole verification universe this thread
+  mapped.
+- Task 23 pins unchanged and green:
+  `stable_id_binding_refuses_an_ambiguous_target_before_mutation`,
+  `edge_to_a_multiply_claimed_id_is_ambiguous_never_validated`,
+  `unique_rejected_claimant_binding_preserves_the_deferred_seam`.
+
+Full suite (189 unit + 107 integration), repository `strata doctor`
+(60 artifacts, no problems), and `scripts/check.sh` are green.
+
+### Final disposition
+
+Technical disposition: accepted and remediated.
+
+Gate disposition: resolved; tasks 23 and 25 together implement and
+verify the catalog-plus-contract invariant this thread demanded, and
+the blocking consequence is discharged. The `review.gate: blocking`
+front matter is retained as historical metadata per thread 4's
+convention.
