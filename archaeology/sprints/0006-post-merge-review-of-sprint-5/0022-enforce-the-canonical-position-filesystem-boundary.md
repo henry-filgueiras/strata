@@ -77,4 +77,15 @@ Adjudication (thread 4) accepted three claims and narrowed one:
   read must not regress the legitimate corpus: the existing repository's
   largest artifact stays well under the cap.
 
+## Scope clarification (2026-07-22, comment thread 8)
+
+The read bound above is per-file by design and must not be described
+as bounding aggregate retention: after it lands, a strict scan may
+still retain up to N × cap across N artifacts. Aggregate retention is
+the deferred read-seam concern adjudicated in
+[[cmt-s5-read-cost-and-watermark|thread 8]] (summary-plus-locator
+scanning; recorded on idea 18), not this task's scope. If a lazy
+payload load is ever introduced, the bound and the symlink refusal
+apply at that second read site too.
+
 ## Result

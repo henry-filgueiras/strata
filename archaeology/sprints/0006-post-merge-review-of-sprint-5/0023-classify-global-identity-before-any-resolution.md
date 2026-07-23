@@ -64,4 +64,13 @@ The invariant to implement, from the thread:
 - `scripts/check.sh` and `strata doctor` are green at close; the real
   corpus must contain no ambiguous ids.
 
+## Scope clarification (2026-07-22, comment thread 8)
+
+The catalog retains every claimant, not every claimant's payload:
+entries are bounded metadata (id, kind, sequence, title, path), the
+shape `edges::Harvested` already demonstrates. Classifying an id as
+ambiguous requires knowing all its claimants; it never requires
+holding any claimant's body in memory
+([[cmt-s5-read-cost-and-watermark|thread 8]]).
+
 ## Result
