@@ -5,7 +5,9 @@
 //! trust artifacts; `doctor`'s job is diagnosis, so it walks the same
 //! per-file pipeline as [`crate::read`], converts each failure into a
 //! [`Finding`], and adds repository-wide checks no single-file parse can
-//! see: duplicate stable identities and duplicate display sequences.
+//! see: duplicate stable identities — checked over the complete identity
+//! claimant catalog (task 23), so unmanaged and malformed-but-admitted
+//! claimants surface too — and duplicate display sequences.
 //!
 //! Validation never mutates canonical files. Per decision 5, states Git
 //! inevitably produces are healthy: a missing managed directory is an empty
@@ -50,7 +52,7 @@ pub struct Finding {
     /// Provisional kebab-case problem code: `malformed-artifact`,
     /// `unreadable-artifact`, `artifact-conflict`, `duplicate-id`,
     /// `duplicate-sequence`, or a typed-edge code (`invalid-edge`,
-    /// `dangling-edge`, `unbound-edge`, `stale-edge`).
+    /// `dangling-edge`, `ambiguous-edge`, `unbound-edge`, `stale-edge`).
     pub problem: &'static str,
     /// Repository-relative path of the affected file or directory.
     pub path: String,
@@ -101,7 +103,8 @@ pub fn check(root: &Path) -> Result<Report, Error> {
     scan_task_dirs(root, &mut findings, &mut artifacts)?;
 
     let artifacts_checked = artifacts.len();
-    findings.extend(duplicate_findings(&artifacts));
+    let catalog = crate::edges::Catalog::build(root);
+    findings.extend(duplicate_findings(&artifacts, &catalog));
 
     // A task's `sprint:` field must name an existing sprint whose
     // containment directory holds the file (decision 11).
@@ -117,7 +120,14 @@ pub fn check(root: &Path) -> Result<Report, Error> {
         let Some(sprint_id) = task.summary.sprint.as_deref() else {
             continue;
         };
-        let Some(owner) = sprints.iter().find(|sprint| sprint.summary.id == sprint_id) else {
+        // Every sprint claiming the id, not the first: a duplicated sprint
+        // id is its own catalog finding, and containment must not be
+        // judged against an arbitrary claimant (task 23).
+        let owners: Vec<&&Artifact> = sprints
+            .iter()
+            .filter(|sprint| sprint.summary.id == sprint_id)
+            .collect();
+        if owners.is_empty() {
             task_findings.push(Finding {
                 problem: "misfiled-task",
                 path: task.summary.path.clone(),
@@ -128,23 +138,40 @@ pub fn check(root: &Path) -> Result<Report, Error> {
                 severity: Severity::Error,
             });
             continue;
-        };
-        let owner_dir = owner
-            .summary
-            .path
-            .rsplit_once('/')
-            .map(|(dir, _)| dir)
-            .unwrap_or_default();
-        if task.summary.path.rsplit_once('/').map(|(dir, _)| dir) != Some(owner_dir) {
+        }
+        let task_dir = task.summary.path.rsplit_once('/').map(|(dir, _)| dir);
+        let owner_dirs: Vec<&str> = owners
+            .iter()
+            .map(|owner| {
+                owner
+                    .summary
+                    .path
+                    .rsplit_once('/')
+                    .map(|(dir, _)| dir)
+                    .unwrap_or_default()
+            })
+            .collect();
+        if !owner_dirs.iter().any(|dir| task_dir == Some(dir)) {
+            let detail = match owners.as_slice() {
+                [owner] => format!(
+                    "the `sprint:` field names `{sprint_id}` ({}), but the \
+                     file sits outside that sprint's containment directory \
+                     `{}`",
+                    owner.summary.reference(),
+                    owner_dirs[0]
+                ),
+                _ => format!(
+                    "the `sprint:` field names `{sprint_id}`, which {} \
+                     sprints claim, and the file sits in none of their \
+                     containment directories: {}",
+                    owners.len(),
+                    owner_dirs.join(", ")
+                ),
+            };
             task_findings.push(Finding {
                 problem: "misfiled-task",
                 path: task.summary.path.clone(),
-                detail: format!(
-                    "the `sprint:` field names `{sprint_id}` ({}), but the \
-                     file sits outside that sprint's containment directory \
-                     `{owner_dir}`",
-                    owner.summary.reference()
-                ),
+                detail,
                 severity: Severity::Error,
             });
         }
@@ -174,12 +201,13 @@ pub fn check(root: &Path) -> Result<Report, Error> {
     }
 
     // Typed edges (decision 10): validated over the cleanly parsed
-    // artifacts against every front-matter id in the archaeology tree, so
-    // provenance targets in not-yet-managed collections still resolve.
-    let universe = crate::edges::harvest_ids(root);
+    // artifacts against the identity claimant catalog, so provenance
+    // targets in not-yet-managed collections still resolve, and an edge
+    // bound to a multiply claimed id is never validated against an
+    // arbitrary claimant (task 23).
     for artifact in &artifacts {
         for edge_issue in
-            crate::edges::check_artifact(&artifact.summary, &artifact.content, &universe)
+            crate::edges::check_artifact(&artifact.summary, &artifact.content, &catalog)
         {
             findings.push(Finding {
                 problem: edge_issue.problem,
@@ -576,35 +604,35 @@ fn finding_at(error: Error, path: String) -> Finding {
     }
 }
 
-/// Repository-wide duplicate checks over the cleanly parsed artifacts:
-/// one finding per duplicated stable identity and per duplicated display
-/// sequence, anchored at the first involved path and naming every other.
-/// Identities are global — a stable id must be unique across collections —
-/// while display sequences are collection-scoped, so `dragon:1` and
-/// `idea:1` coexist.
-fn duplicate_findings(artifacts: &[Artifact]) -> Vec<Finding> {
-    let mut by_id: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+/// Repository-wide duplicate checks: one finding per duplicated stable
+/// identity and per duplicated display sequence, anchored at the first
+/// involved path and naming every other.
+///
+/// Identities are global and checked over the complete claimant catalog
+/// (task 23): canonical, unmanaged, and malformed-but-admitted claimants
+/// all participate, and this is the only duplicate-identity vocabulary —
+/// the former managed-only map is subsumed, never a competing finding.
+/// Display sequences remain collection-scoped over the cleanly parsed
+/// managed artifacts, so `dragon:1` and `idea:1` coexist.
+fn duplicate_findings(artifacts: &[Artifact], catalog: &crate::edges::Catalog) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    for (id, claimants) in catalog.ambiguous_ids() {
+        let described: Vec<String> = claimants.iter().map(|c| describe_claimant(c)).collect();
+        findings.push(Finding {
+            problem: "duplicate-id",
+            path: claimants[0].claim.path.clone(),
+            detail: format!("stable id `{id}` is shared by: {}", described.join(", ")),
+            severity: Severity::Error,
+        });
+    }
+
     let mut by_sequence: BTreeMap<(&str, u32), Vec<&str>> = BTreeMap::new();
     for artifact in artifacts {
         let summary = &artifact.summary;
-        by_id.entry(&summary.id).or_default().push(&summary.path);
         by_sequence
             .entry((&summary.kind, summary.sequence))
             .or_default()
             .push(&summary.path);
-    }
-
-    let mut findings = Vec::new();
-    for (id, mut paths) in by_id {
-        if paths.len() > 1 {
-            paths.sort_unstable();
-            findings.push(Finding {
-                problem: "duplicate-id",
-                path: paths[0].into(),
-                detail: format!("stable id `{id}` is shared by: {}", paths.join(", ")),
-                severity: Severity::Error,
-            });
-        }
     }
     for ((kind, sequence), mut paths) in by_sequence {
         if paths.len() > 1 {
@@ -621,6 +649,18 @@ fn duplicate_findings(artifacts: &[Artifact]) -> Vec<Finding> {
         }
     }
     findings
+}
+
+/// Human description of one duplicate claimant: its path, annotated with
+/// its catalog disposition when the claimant is not canonically parsed.
+fn describe_claimant(claimant: &crate::edges::Claimant) -> String {
+    match claimant.disposition {
+        crate::edges::Disposition::Canonical => claimant.claim.path.clone(),
+        crate::edges::Disposition::Unassessed => format!("{} (unmanaged)", claimant.claim.path),
+        crate::edges::Disposition::Rejected { class } => {
+            format!("{} (rejected: {class})", claimant.claim.path)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1400,6 +1440,189 @@ mod tests {
                 vec![("dangling-edge", "archaeology/dragons/0001-settled.md")]
             );
         }
+    }
+
+    #[test]
+    fn managed_and_unmanaged_claimants_sharing_an_id_are_a_duplicate_finding() {
+        // Thread 5 specimen 1: a healthy managed artifact and a healthy
+        // unmanaged artifact carrying one id must surface, not resolve
+        // silently to a traversal accident.
+        let tmp = temp_repo();
+        write_dragon(
+            tmp.path(),
+            DRAGONS_DIR,
+            "0001-risk.md",
+            &dragon_markdown("dup-shared", 1, "open", "Risk"),
+        );
+        seed_decision(tmp.path(), "dup-shared");
+
+        let report = check(tmp.path()).unwrap();
+
+        assert_eq!(
+            problems(&report),
+            vec![("duplicate-id", "archaeology/decisions/0001-a-decision.md")]
+        );
+        let detail = &report.findings[0].detail;
+        assert!(
+            detail.contains("archaeology/decisions/0001-a-decision.md (unmanaged)")
+                && detail.contains("archaeology/dragons/0001-risk.md"),
+            "every claimant and its disposition must be named: {detail}"
+        );
+    }
+
+    #[test]
+    fn two_unmanaged_claimants_sharing_an_id_are_a_duplicate_finding() {
+        // Thread 5 specimen 2: both claimants sit outside the strong set;
+        // the catalog still sees the collision.
+        let tmp = temp_repo();
+        seed_decision(tmp.path(), "dec-twin");
+        let logs = tmp.path().join("archaeology/logs");
+        fs::create_dir_all(&logs).unwrap();
+        fs::write(
+            logs.join("0001-log.md"),
+            "---\nid: dec-twin\nkind: log\n---\n\n# A log\n",
+        )
+        .unwrap();
+
+        let report = check(tmp.path()).unwrap();
+
+        assert_eq!(report.artifacts_checked, 0);
+        assert_eq!(
+            problems(&report),
+            vec![("duplicate-id", "archaeology/decisions/0001-a-decision.md")]
+        );
+        assert!(
+            report.findings[0]
+                .detail
+                .contains("archaeology/logs/0001-log.md"),
+            "{}",
+            report.findings[0].detail
+        );
+    }
+
+    #[test]
+    fn canonical_and_rejected_claimants_share_one_duplicate_vocabulary() {
+        // Thread 5 specimen 3: a malformed artifact whose id is still
+        // admitted duplicates a healthy artifact's id. Exactly one
+        // duplicate finding names both claimants — no competing
+        // managed-only finding, and the scan continues past the
+        // malformed file.
+        let tmp = temp_repo();
+        write_dragon(
+            tmp.path(),
+            DRAGONS_DIR,
+            "0001-fine.md",
+            &dragon_markdown("dup-x", 1, "open", "Fine"),
+        );
+        write_dragon(
+            tmp.path(),
+            DRAGONS_DIR,
+            "0002-broken.md",
+            &dragon_markdown("dup-x", 2, "done", "Broken"),
+        );
+
+        let report = check(tmp.path()).unwrap();
+
+        assert_eq!(report.artifacts_checked, 1);
+        assert_eq!(
+            problems(&report),
+            vec![
+                ("duplicate-id", "archaeology/dragons/0001-fine.md"),
+                ("malformed-artifact", "archaeology/dragons/0002-broken.md"),
+            ]
+        );
+        let duplicate = &report.findings[0];
+        assert!(
+            duplicate
+                .detail
+                .contains("archaeology/dragons/0001-fine.md")
+                && duplicate
+                    .detail
+                    .contains("archaeology/dragons/0002-broken.md (rejected: malformed-artifact)"),
+            "{}",
+            duplicate.detail
+        );
+    }
+
+    #[test]
+    fn multiple_rejected_claimants_sharing_an_id_are_a_duplicate_finding() {
+        let tmp = temp_repo();
+        write_dragon(
+            tmp.path(),
+            DRAGONS_DIR,
+            "0001-broken.md",
+            &dragon_markdown("dup-b", 1, "done", "Broken one"),
+        );
+        write_dragon(
+            tmp.path(),
+            DRAGONS_DIR,
+            "0002-worse.md",
+            &dragon_markdown("dup-b", 2, "resolved", "Broken two"),
+        );
+
+        let report = check(tmp.path()).unwrap();
+
+        assert_eq!(report.artifacts_checked, 0);
+        assert_eq!(
+            problems(&report),
+            vec![
+                ("duplicate-id", "archaeology/dragons/0001-broken.md"),
+                ("malformed-artifact", "archaeology/dragons/0001-broken.md"),
+                ("malformed-artifact", "archaeology/dragons/0002-worse.md"),
+            ]
+        );
+    }
+
+    #[test]
+    fn edge_to_a_multiply_claimed_id_is_ambiguous_never_validated() {
+        // Thread 5 specimen 2b (the verdict flip): an idea and a decision
+        // share the target id. Neither an acquittal (decision wins) nor a
+        // conviction (idea wins) may be issued from an arbitrary
+        // claimant; the edge is ambiguous, naming every claimant.
+        let tmp = temp_repo();
+        seed_decision(tmp.path(), "amb-flip");
+        seed_idea(
+            tmp.path(),
+            IDEAS_DIR,
+            "0001-idea.md",
+            &idea_markdown("amb-flip", 1, "parked", "Tempting"),
+        );
+        write_dragon(
+            tmp.path(),
+            DRAGONS_DIR,
+            "0001-settled.md",
+            &closed_dragon_with_edge("resolved-by: \"[[amb-flip|either]]\""),
+        );
+
+        let report = check(tmp.path()).unwrap();
+
+        let edge_findings: Vec<&Finding> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.path == "archaeology/dragons/0001-settled.md")
+            .collect();
+        assert_eq!(edge_findings.len(), 1, "{:?}", report.findings);
+        assert_eq!(edge_findings[0].problem, "ambiguous-edge");
+        assert_eq!(edge_findings[0].severity, Severity::Error);
+        assert!(
+            edge_findings[0]
+                .detail
+                .contains("archaeology/decisions/0001-a-decision.md")
+                && edge_findings[0]
+                    .detail
+                    .contains("archaeology/ideas/0001-idea.md"),
+            "{}",
+            edge_findings[0].detail
+        );
+        // The collision itself is separately a duplicate finding.
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.problem == "duplicate-id"),
+            "{:?}",
+            report.findings
+        );
     }
 
     #[test]

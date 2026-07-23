@@ -246,6 +246,47 @@ fn symlinked_artifact_is_refused_by_strict_reads_and_reported_by_doctor() {
 }
 
 #[test]
+fn human_and_json_output_agree_on_duplicate_claimant_classification() {
+    // Task 23: a managed dragon and an unmanaged decision share an id.
+    // Both projections must classify the collision identically and name
+    // the same claimant paths.
+    let tmp = init_repo();
+    fs::write(
+        tmp.path().join(DRAGONS_DIR).join("0001-risk.md"),
+        dragon_markdown("dup-shared", 1, "open", "Risk"),
+    )
+    .unwrap();
+    fs::create_dir_all(tmp.path().join("archaeology/decisions")).unwrap();
+    fs::write(
+        tmp.path().join("archaeology/decisions/0001-a.md"),
+        "---\nid: dup-shared\nsequence: 1\nkind: decision\nstatus: accepted\ncreated: 2026-07-20\n---\n\n# A decision\n",
+    )
+    .unwrap();
+
+    let human = strata_in(tmp.path(), &["doctor"]);
+    assert_eq!(human.status.code(), Some(9), "{}", stderr(&human));
+
+    let json = strata_in(tmp.path(), &["doctor", "--json"]);
+    assert_eq!(json.status.code(), Some(9), "{}", stderr(&json));
+    let findings: serde_json::Value = serde_json::from_str(stdout(&json).trim()).unwrap();
+    let findings = findings.as_array().unwrap();
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert_eq!(findings[0]["problem"], "duplicate-id");
+    assert_eq!(findings[0]["path"], "archaeology/decisions/0001-a.md");
+    let detail = findings[0]["detail"].as_str().unwrap();
+
+    let report = stdout(&human);
+    assert!(report.contains("duplicate-id"), "{report}");
+    assert!(report.contains(detail), "{report}\nvs\n{detail}");
+    for path in [
+        "archaeology/decisions/0001-a.md",
+        "archaeology/dragons/0001-risk.md",
+    ] {
+        assert!(detail.contains(path), "missing `{path}`: {detail}");
+    }
+}
+
+#[test]
 fn doctor_outside_a_repository_is_a_missing_repository_error() {
     let tmp = tempfile::tempdir().unwrap();
 

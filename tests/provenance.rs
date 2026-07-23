@@ -159,6 +159,44 @@ fn an_idea_target_is_refused_by_the_vocabulary() {
 }
 
 #[test]
+fn an_ambiguous_stable_id_target_is_refused_naming_every_claimant() {
+    // Task 23: a second admitted claimant of the target id — here an
+    // unmanaged log — makes the stable-id arm refuse with the same
+    // `ambiguous-reference` contract as the `kind:N` arm, before any
+    // mutation.
+    let tmp = init_repo();
+    seed_dragon(tmp.path());
+    seed_decision(tmp.path());
+    fs::create_dir_all(tmp.path().join("archaeology/logs")).unwrap();
+    fs::write(
+        tmp.path().join("archaeology/logs/0001-imposter.md"),
+        "---\nid: dec-settle-it\nkind: log\n---\n\n# Imposter\n",
+    )
+    .unwrap();
+    let original = fs::read_to_string(tmp.path().join(DRAGONS_DIR).join("0001-risk.md")).unwrap();
+
+    let out = strata_in(
+        tmp.path(),
+        &["close", "dragon:1", "--resolved-by", "dec-settle-it"],
+    );
+
+    assert_eq!(out.status.code(), Some(8), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(err.starts_with("error[ambiguous-reference]:"), "{err}");
+    for path in [
+        "archaeology/decisions/0001-settle-it.md",
+        "archaeology/logs/0001-imposter.md",
+    ] {
+        assert!(err.contains(path), "missing `{path}`: {err}");
+    }
+    assert_eq!(
+        fs::read_to_string(tmp.path().join(DRAGONS_DIR).join("0001-risk.md")).unwrap(),
+        original,
+        "refusal must precede any mutation"
+    );
+}
+
+#[test]
 fn bare_transitions_behave_exactly_as_before() {
     let tmp = init_repo();
     seed_dragon(tmp.path());

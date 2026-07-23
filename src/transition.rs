@@ -78,12 +78,17 @@ pub fn transition_with_provenance(
 }
 
 /// Resolve one provenance-flag target to its front-matter line.
+///
+/// Both target forms resolve through the identity claimant catalog
+/// (task 23): a stable id claimed by more than one artifact is refused as
+/// `ambiguous-reference` naming every claimant path, before any mutation,
+/// exactly as the `kind:N` form already refuses duplicated sequences.
 fn resolve_edge(root: &Path, key: &'static str, raw: &str) -> Result<(String, String), Error> {
     let kind = crate::edges::EDGE_KINDS
         .iter()
         .find(|kind| kind.key == key)
         .expect("provenance flags only carry decided edge keys");
-    let harvested = crate::edges::harvest(root);
+    let catalog = crate::edges::Catalog::build(root);
     let target = if let Some((target_kind, sequence)) = raw.split_once(':') {
         let sequence: u32 = sequence.parse().map_err(|_| Error::InvalidInvocation {
             message: format!(
@@ -91,9 +96,12 @@ fn resolve_edge(root: &Path, key: &'static str, raw: &str) -> Result<(String, St
                  stable artifact id"
             ),
         })?;
-        let matches: Vec<&crate::edges::Harvested> = harvested
+        let matches: Vec<&crate::edges::Claimant> = catalog
+            .claimants()
             .iter()
-            .filter(|artifact| artifact.kind == target_kind && artifact.sequence == Some(sequence))
+            .filter(|claimant| {
+                claimant.claim.kind == target_kind && claimant.claim.sequence == Some(sequence)
+            })
             .collect();
         match matches.as_slice() {
             [] => {
@@ -101,25 +109,35 @@ fn resolve_edge(root: &Path, key: &'static str, raw: &str) -> Result<(String, St
                     reference: raw.to_string(),
                 });
             }
-            [only] => (*only).clone(),
+            [only] => only.claim.clone(),
             several => {
                 return Err(Error::AmbiguousReference {
                     reference: raw.to_string(),
                     candidates: several
                         .iter()
-                        .map(|artifact| artifact.path.clone())
+                        .map(|claimant| claimant.claim.path.clone())
                         .collect(),
                 });
             }
         }
     } else {
-        harvested
-            .iter()
-            .find(|artifact| artifact.id == raw)
-            .cloned()
-            .ok_or_else(|| Error::ArtifactNotFound {
-                reference: raw.to_string(),
-            })?
+        match catalog.resolve(raw) {
+            crate::edges::Resolution::Missing => {
+                return Err(Error::ArtifactNotFound {
+                    reference: raw.to_string(),
+                });
+            }
+            crate::edges::Resolution::Unique(claimant) => claimant.claim.clone(),
+            crate::edges::Resolution::Ambiguous(claimants) => {
+                return Err(Error::AmbiguousReference {
+                    reference: raw.to_string(),
+                    candidates: claimants
+                        .iter()
+                        .map(|claimant| claimant.claim.path.clone())
+                        .collect(),
+                });
+            }
+        }
     };
     if !kind.target_kinds.contains(&target.kind.as_str()) {
         return Err(Error::InvalidInvocation {
@@ -530,6 +548,103 @@ mod tests {
             fs::read_to_string(tmp.path().join(IDEAS_DIR).join("0001-settled.md")).unwrap(),
             "---\nid: idea-settled\nsequence: 1\nkind: idea\nstatus: adopted\ncreated: 2026-07-20\n---\n\n# Settled\n",
             "nothing may change"
+        );
+    }
+
+    #[test]
+    fn stable_id_binding_refuses_an_ambiguous_target_before_mutation() {
+        // Task 23: one canonical claimant plus one canonically rejected
+        // claimant of the same id is ambiguity, refused with the same
+        // `ambiguous-reference` contract as the `kind:N` arm — never
+        // resolved to the traversal's first claimant, and never after
+        // touching the source artifact.
+        let tmp = temp_repo();
+        let original = rich_dragon("open");
+        seed(tmp.path(), DRAGONS_DIR, "0001-rich-dragon.md", &original);
+        // The canonical claimant: a healthy closed task.
+        seed(
+            tmp.path(),
+            "archaeology/sprints/0001-work",
+            "0001-target.md",
+            "---\nid: dup-target\nsequence: 1\nkind: task\nstatus: closed\nsprint: spr-1\ncreated: 2026-07-20\n---\n\n# Canonical claimant\n",
+        );
+        // The rejected claimant: an idea with an inadmissible status,
+        // refused by canonical parsing yet retained as an admitted
+        // claim. It sits outside the scanned dragon collection, so the
+        // ambiguity — not the strict sibling scan — is what refuses.
+        seed(
+            tmp.path(),
+            IDEAS_DIR,
+            "0001-broken.md",
+            "---\nid: dup-target\nsequence: 1\nkind: idea\nstatus: done\ncreated: 2026-07-20\n---\n\n# Rejected claimant\n",
+        );
+
+        let err = transition_with_provenance(
+            tmp.path(),
+            &read::DRAGON,
+            Selector::Sequence(1),
+            "dragon:1",
+            Status::Closed,
+            Some(("resolved-by", "dup-target")),
+        )
+        .unwrap_err();
+
+        let Error::AmbiguousReference { candidates, .. } = err else {
+            panic!("expected ambiguous-reference, got {err:?}");
+        };
+        assert_eq!(
+            candidates,
+            vec![
+                "archaeology/ideas/0001-broken.md".to_string(),
+                "archaeology/sprints/0001-work/0001-target.md".to_string(),
+            ],
+            "candidates must be every claimant in path-sorted order"
+        );
+        assert_eq!(
+            fs::read_to_string(tmp.path().join(DRAGONS_DIR).join("0001-rich-dragon.md")).unwrap(),
+            original,
+            "refusal must precede any mutation"
+        );
+    }
+
+    #[test]
+    fn unique_rejected_claimant_binding_preserves_the_deferred_seam() {
+        // Decision 12 records this compatibility behavior as deferred,
+        // not desirable: a *unique* claimant whose artifact is rejected
+        // by canonical parsing may still serve as a provenance target
+        // when a title is extractable. Task 23 preserves it unchanged;
+        // its repair belongs to a future decision.
+        let tmp = temp_repo();
+        seed(
+            tmp.path(),
+            DRAGONS_DIR,
+            "0001-rich-dragon.md",
+            &rich_dragon("open"),
+        );
+        let sprint_dir = tmp.path().join(crate::repo::SPRINTS_DIR).join("0001-work");
+        fs::create_dir_all(&sprint_dir).unwrap();
+        fs::write(
+            sprint_dir.join("0001-broken.md"),
+            "---\nid: tsk-broken\nsequence: 1\nkind: task\nstatus: done\nsprint: spr-1\ncreated: 2026-07-20\n---\n\n# Broken task\n",
+        )
+        .unwrap();
+
+        let done = transition_with_provenance(
+            tmp.path(),
+            &read::DRAGON,
+            Selector::Sequence(1),
+            "dragon:1",
+            Status::Closed,
+            Some(("resolved-by", "tsk-broken")),
+        )
+        .unwrap();
+
+        assert_eq!(done.to, Status::Closed);
+        let content =
+            fs::read_to_string(tmp.path().join(DRAGONS_DIR).join("0001-rich-dragon.md")).unwrap();
+        assert!(
+            content.contains("resolved-by: \"[[tsk-broken|Broken task]]\""),
+            "{content}"
         );
     }
 

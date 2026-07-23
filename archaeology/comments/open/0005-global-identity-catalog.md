@@ -207,3 +207,54 @@ management; edge validation and stable-id binding refusing ambiguous
 ids with the claimant list, matching the `kind:N` contract. Per the
 stop-the-line protocol, no production code changes here — this thread
 stays **open and blocking** until the catalog lands and is verified.
+
+## cme-global-identity-remediation-progress-1
+
+- author: agent, Anthropic, as "Claude"
+- created: 2026-07-22
+
+### Implemented repair
+
+Task 23 landed the catalog under the contract decision 12
+([[dec-canonical-representation|canonical representation]]) recorded
+for it. `edges::Catalog` is built from the one non-following,
+bounded-read harvest pass; every admitted claim — the exact
+adjudicated threshold: bounded UTF-8, valid framing, parseable YAML,
+string `id` and string `kind` — is retained as a claimant with an
+explicit disposition (canonical, probe-only/unassessed, or rejected
+by canonical parsing with a stable reason class). Resolution is a
+three-way algebra: missing, unique, or ambiguous with every claimant
+in path-sorted order, independent of the traversal accident this
+thread convicted (the LIFO directory order no longer reaches any
+consumer). `harvest_ids`, the first-seen-wins map, is deleted with no
+surviving wrapper; the stable-id binding arm, doctor's edge
+validation, doctor's duplicate check, and the misfiled-task owner
+lookup all resolve through the catalog.
+
+### Post-remediation evidence
+
+| Accepted finding | Regression or static evidence | Result |
+| --- | --- | --- |
+| Specimen 1: decision and task share an id, bind chooses silently | Stable-id binding now refuses ambiguity pre-mutation with `ambiguous-reference` naming every claimant path: `stable_id_binding_refuses_an_ambiguous_target_before_mutation` (bytes byte-identical after refusal), CLI `an_ambiguous_stable_id_target_is_refused_naming_every_claimant` (exit 8) | remediated |
+| Specimen 2: two unmanaged claimants invisible to doctor | Catalog-wide `duplicate-id`: `two_unmanaged_claimants_sharing_an_id_are_a_duplicate_finding` (fires at `artifacts_checked = 0`), `managed_and_unmanaged_claimants_sharing_an_id_are_a_duplicate_finding` | remediated |
+| Specimen 2b: the arbitrary winner flips doctor's verdict | An edge bound to a multiply claimed id is `ambiguous-edge` naming every claimant — neither conviction nor acquittal from a traversal winner: `edge_to_a_multiply_claimed_id_is_ambiguous_never_validated` | remediated |
+| Specimen 3: malformed-but-harvestable claimant escapes duplicate checking | `canonical_and_rejected_claimants_share_one_duplicate_vocabulary` (one `duplicate-id` naming both, disposition annotated, scan continues), `multiple_rejected_claimants_sharing_an_id_are_a_duplicate_finding` | remediated |
+| Specimen 4: the safe arm recommends the unsafe arm | Both arms now share the refusal contract, so the `ambiguous-reference` advice to use stable ids is sound; `kind:N` behavior unchanged (`duplicate_sequence_is_an_ambiguous_reference` still green) | remediated |
+| Admission and determinism (decision 12 pins) | `claim_admission_threshold_is_exact` (no fabricated claims from bad bytes/framing/YAML or a kindless id), `quoted_and_unquoted_id_spellings_claim_the_same_decoded_identity`, `dispositions_are_explicit_and_not_inferred_from_optional_fields`, `catalog_order_is_path_sorted_under_opposite_creation_orders` (same path set, opposite creation orders, identical lists), `human_and_json_output_agree_on_duplicate_claimant_classification` | pinned |
+
+The unique malformed/probe-only provenance target remains the
+deferred seam decision 12 preserves without blessing, pinned as
+current behavior by
+`unique_rejected_claimant_binding_preserves_the_deferred_seam`. Full
+suite, `strata doctor` (60 artifacts, no problems — the real corpus
+holds no ambiguous ids), and `scripts/check.sh` are green.
+
+### Gate status
+
+Task 23 is closed and its acceptance criteria are verified above.
+This thread nevertheless stays **open and blocking**: the
+addressability half of decision 12's contract — which admitted
+identities may be bound or addressed at all — is
+[[tsk_01KY6364DV39W0DZ3N0NF8GBGB|task 25]]'s implementation, and the
+catalog-versus-contract coupling this thread adjudicated is not fully
+discharged until it lands. Resolution follows task 25's verification.
