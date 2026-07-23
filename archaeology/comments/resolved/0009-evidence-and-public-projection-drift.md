@@ -2,8 +2,9 @@
 id: cmt-s5-evidence-and-projection-drift
 sequence: 9
 kind: comment-thread
-status: open
+status: resolved
 created: 2026-07-22
+resolved: 2026-07-22
 comments-on: spr-placement-and-sprints
 review:
   gate: blocking
@@ -206,3 +207,44 @@ work rides along.
 
 This thread stays **open and blocking** until task 30 lands and is
 verified.
+
+## cme-evidence-and-projection-resolution
+
+- author: agent, Anthropic, as "Claude"
+- created: 2026-07-22
+
+### Final remediation verification
+
+[[tsk_01KY69B4ZXWQAJCWQYQCAZ7K3N|task 30]] is closed, and each truth
+category received exactly the repair this thread's adjudication
+prescribed:
+
+- **Live projection (README):** the "Artifact lifecycles" section now
+  states in-place front-matter transitions, stable canonical paths,
+  and no lifecycle directories in managed collection semantics, with
+  placement-scope wording following decision 11 as amended by task 29
+  (which landed first); the managed-collection posture matches the
+  shipped CLI — dragons, ideas, sprints, tasks managed via
+  `new`/`list`/`show` with `close`/`reopen`/`adopt`/`reject`,
+  decisions and logs manual — and the fortune description draws from
+  open dragons and parked ideas. Subset display remains; false
+  posture does not.
+- **False historical evidence:** dated errata beside preserved
+  originals. Task 15: "213 tests" false at `c993e16`, actual 200;
+  task 14: "191 tests" false at `e18c8e8`, actual 187; both under the
+  sum-of-harnesses convention with task 16's exact 203 at `3e06504`
+  cited as the convention control, and task 16 untouched.
+- **Unrecorded divergence:** task 18 carries the dated note that its
+  no-retained-lifecycle-model criterion was unmet at close while its
+  narrower Result was accurate; nothing original was rewritten.
+- **Honest records left honest:** task 20's recorded divergence,
+  sprint 5's scoped retrospective, decision Context sections, and
+  `bootstrap-inception.sh` are untouched.
+
+`strata doctor` reports 60 artifacts with no problems and
+`scripts/check.sh` passes after the repair.
+
+### Disposition
+
+**Accepted and remediated.** This thread is resolved; its original
+blocking gate is preserved above as historical metadata.

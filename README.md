@@ -105,9 +105,11 @@ The arrows only point one way for a reason:
 
 ## Artifact lifecycles
 
-Artifacts move between lifecycle directories; their `status` metadata and
-placement must always agree — that's one of the invariants `doctor` exists to
-check. Terminal states are moves, never deletions: history is the product.
+Lifecycle state lives in front matter, and transitions rewrite it in place:
+a state change is a one-line diff, never a file move, so canonical paths
+stay stable across an artifact's whole life. Lifecycle directories are not
+part of managed collection semantics. Terminal states are transitions,
+never deletions: history is the product.
 
 ```mermaid
 flowchart LR
@@ -135,9 +137,11 @@ archaeology/
         └── 0001-task.md ...
 ```
 
-Placement is flat (decision 11): every artifact lives directly in its
-collection's directory, and lifecycle state is carried only in front
-matter — a state change is a one-line diff, never a file move.
+Stable containment is collection-specific (decision 11 as amended):
+dragons and ideas file directly in their collection directories, while
+each sprint owns a stable containment directory and its tasks live inside
+it. Containment never changes over an artifact's lifecycle — state is
+carried only in front matter.
 
 ## Status
 
@@ -151,10 +155,12 @@ Strata is bootstrapping its smallest useful vertical slice. Honest scoreboard:
 | `strata show dragon:N` | inspect one artifact | ✅ |
 | `strata doctor [--json]` | validate repository invariants, report every finding | ✅ |
 | `strata close dragon:N` / `strata reopen dragon:N` | transition an artifact between lifecycle states, safely | ✅ |
-| `strata fortune` | resurface one open dragon, favoring stale risks | ✅ |
+| `strata fortune` | resurface one open dragon or parked idea, favoring stale artifacts | ✅ |
 
-The bootstrap hardcodes the `dragon` collection while the mechanics are
-proven; the other collections above are maintained manually until then.
+Dragons, ideas, sprints, and tasks are managed collections: `new`, `list`,
+and `show` cover all four (the rows above show the dragon spelling), and
+each collection's lifecycle commands apply — `close`, `reopen`, `adopt`,
+`reject`. Decisions and logs remain manually maintained.
 Daemons, indexes, embeddings, semantic search, MCP, GraphQL, and dashboards
 are deliberately deferred — each would need a recorded decision and evidence
 that the layer beneath it is useful.

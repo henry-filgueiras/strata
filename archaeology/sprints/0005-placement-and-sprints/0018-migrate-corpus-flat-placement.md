@@ -70,3 +70,17 @@ lifecycle directory name — both covered by updated tests. README's
 sample output and layout tree are updated; `bootstrap-inception.sh`
 deliberately is not (it reproduces the historical seed state and says
 so).
+
+## Divergence note (2026-07-22)
+
+This task's acceptance criterion that no code path or document still
+referenced the retired lifecycle model except historical records was
+unmet at close: README's live "Artifact lifecycles" section still
+asserted that artifacts move between lifecycle directories, that
+status and placement must agree, and that terminal states are moves.
+The Result's narrower claim above — sample output and layout tree
+updated, `bootstrap-inception.sh` deliberately untouched — was
+accurate; the gap was the criterion's wider scope. The divergence
+went unrecorded at close and is recorded here without rewriting the
+original Result or criterion. Adjudicated by comment thread 9; the
+live projection is repaired by task 30.
