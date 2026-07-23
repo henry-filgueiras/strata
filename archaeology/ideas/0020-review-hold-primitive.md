@@ -44,3 +44,46 @@ of how many branches exist; an andon cord stops the line without
 dictating how many lines the factory runs. Related:
 [[ide_01KY5YG15T64AA6K5F0VVDJT97|idea 19]] supplies the review
 ceremony whose threads a hold would consult.
+
+## Incident evidence: the hold ran to completion (2026-07-23)
+
+The Problem and Sketch above were written mid-incident; this section
+records how the incident actually closed (2026-07-22) as executable
+evidence for a first-class review interlock.
+
+- Sprint 5 reached `main` before its intended review was complete;
+  [[spr_01KY61D615FAC8VVSTD7QXX1DW|sprint 6]] then served as a
+  temporary remediation interlock while the stop-the-line incident
+  was adjudicated.
+- Umbrella [[cmt-sprint5-post-merge-stop-the-line|thread 3]] carried
+  blocking-gate metadata (`review.gate: blocks-new-sprint`) until all
+  child findings were disposed, and every accepted finding received
+  an explicit owner and executable verification before the hold was
+  released through thread 3's eight closure conditions.
+- The mechanism worked socially and archaeologically — nothing
+  slipped past the gate — but it depended on manual convention, not
+  an enforceable repository state. Once decision 15 legalized
+  concurrent sprints and removed the accidental single-sprint mutex,
+  the hold stood on thread 3's procedural authority alone: nothing
+  mechanical would have refused a feature sprint opened past it.
+- The lesson is not that all work requires bureaucracy. It is that
+  some named review campaigns need a durable, queryable gate whose
+  release conditions cannot disappear into chat or operator memory.
+
+Distinct states the incident proved must not be conflated: an active
+sprint, an unresolved blocking review, ordinary pending work, and a
+release/merge prohibition are four different things — the incident
+held all four at once and only convention kept them apart. A hold
+primitive must not assume they share one lifecycle state.
+
+**Present disposition:** parked, unchanged.
+
+**Next investigation (bounded):** specify the smallest review-hold
+primitive that can answer: what is held; why it is held; who or what
+owns each exit condition; whether new work may continue concurrently;
+what evidence releases the hold; and which commands and doctor
+findings expose violations.
+
+**Excluded for now:** Git hooks, GitHub branch protection, CI policy,
+and any generalized workflow engine — possible enforcement adapters,
+not yet the domain model.

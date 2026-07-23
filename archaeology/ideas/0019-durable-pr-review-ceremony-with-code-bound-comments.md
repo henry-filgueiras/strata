@@ -46,3 +46,18 @@ does not durably hold. [[idea-comment-threads|Comment threads]] is
 the container this would reuse; decision 10 reserved `#` for exactly
 this fragment question. Contrast with PR comments as prior art: same
 content, no durability, no cross-references, no archaeology.
+
+## Incident evidence (2026-07-23)
+
+Sprint 6's rationale named its review threads provisional test data
+for this idea alongside idea 11, and the Sprint 5 post-merge review
+(closed 2026-07-22) then ran a full post-merge variant of the
+ceremony: [[cmt-sprint5-post-merge-stop-the-line|thread 3]] anchored
+a `git-range` baseline, hosted adjudication threads bound to code
+under review, and distilled the agreed outcome into decisions, tasks,
+and a final disposition — the TLDR-into-the-record step this sketch
+proposes, performed by hand. The pre-merge form this idea actually
+proposes remains untested; the incident exercised the container and
+the distillation, not the PR-flow timing. Status stays parked; the
+managed-thread mechanics it would reuse are idea 11's promotion
+question, not this idea's.

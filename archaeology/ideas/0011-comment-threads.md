@@ -185,3 +185,63 @@ rejected. New lessons, beyond the first specimen's:
   already encodes non-blocking; "should not block Sprint 2" lived in
   prose and cost nothing. No `severity`/`blocking` front matter earned
   its way in.
+
+## Incident evidence: the Sprint 5 post-merge review (2026-07-23)
+
+The Sprint 5 post-merge review
+([[cmt-sprint5-post-merge-stop-the-line|thread 3]],
+[[spr_01KY61D615FAC8VVSTD7QXX1DW|sprint 6]], closed 2026-07-22) ran
+seven further threads through their whole lifecycle. The original
+proposal above is unchanged; this section records what that campaign
+demonstrated.
+
+- Threads carried the incident's deliberation, and only its
+  deliberation. Discussion ≠ conclusion held throughout: every
+  accepted conclusion was still promoted into decisions (12–15 and
+  the decision 11 amendment), tasks (22–31), or documentation, with
+  the thread as provenance — exactly the promotion rule this idea's
+  sketch states.
+- Every resolution repeated the identical manual lifecycle operation:
+  edit the thread's front matter (`status: resolved`, add the
+  `resolved:` date) and `git mv` the file from `comments/open/` to
+  `comments/resolved/`. Thread 3's closure and sprint 6's
+  retrospective both record this was performed identically for every
+  resolution; by incident closure the corpus held nine resolved
+  specimens (roughly ten performances of the same by-hand mechanics
+  in the repository's life so far). This recurrence is concrete
+  promotion evidence, not aesthetic dislike of hand work.
+- Decision 11's amendment made promotion of this idea the explicit
+  trigger for settling canonical stable placement for managed
+  comments. Two constraints recorded there bind any implementation:
+  a managed transition must not preserve lifecycle-directory movement
+  without a new explicit decision, and the current
+  directory-plus-`status:` duplication is a tolerated provisional
+  exception — not precedent for other managed collections.
+
+Design pressures the incident sharpened, deliberately left
+unresolved:
+
+- one thread-level disposition may be too coarse (already seen in the
+  second specimen; thread 3's children needed per-claim verdicts like
+  "accepted (narrowed)" and per-case ownership);
+- deferral is not identical to parking an idea (thread 8 resolved
+  `accepted-deferred` with its seam owned by an existing idea; no new
+  artifact was minted);
+- entry identity and fine-grained citation may eventually matter (the
+  incident cited individual entries and per-case determinations by
+  convention only);
+- provenance must survive promotion into canonical artifacts — the
+  incident's decisions and tasks cite their originating threads, and
+  a managed lifecycle must not break those trails;
+- this is not a forum product: notifications, reactions, access
+  control, synchronization, and similar machinery remain out of scope
+  unless separately justified.
+
+**Present disposition:** parked. Strengthened evidence is not
+adoption; promotion remains an explicit decision.
+
+**Promotion trigger / next investigation:** design the minimum
+managed-comment lifecycle and stable-placement model; test whether
+`new`, `list`, `show`, `resolve`, and possibly `reopen` are
+sufficient verbs; decide entry identity and promotion/provenance
+behavior before any implementation.

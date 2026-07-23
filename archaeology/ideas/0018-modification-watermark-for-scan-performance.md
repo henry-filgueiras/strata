@@ -67,3 +67,41 @@ parked with the claim narrowed, not rewritten:
 Prerequisites before un-parking: a felt scan cost in a real
 repository (this idea's original bar); the summary/locator seam
 first; and a demonstrated invalidation scheme.
+
+## Incident-closure note (2026-07-23)
+
+The Sprint 5 post-merge review closed on 2026-07-22 with
+[[cmt-s5-read-cost-and-watermark|thread 8]] resolved
+`accepted-deferred` — explicitly neither rejected nor silently
+forgotten. This idea is the durable owner of that seam; the incident
+closed legitimately with the item deferred, and deferred means owned
+with a trigger, not vanished from active memory. Decision 13
+additionally routed the catalog-aware-isolation variant (skip a
+malformed sibling only when the identity catalog proves it is not a
+claimant) through this idea's read-architecture prerequisites rather
+than ad hoc read-policy changes.
+
+Reactivation, restated from thread 8's adjudication without
+embellishment:
+
+- **Trigger:** a felt scan cost in a real repository — this idea's
+  original bar, unchanged.
+- **The pressure the seam addresses:** thread 8's cost mapping found
+  bytes *retained* dominate, not bytes read — every strict surface
+  holds the full corpus in memory where all summaries plus one
+  payload would suffice, with doctor's double read as the standing
+  aggravation. The retention remedy is the summary-plus-locator read
+  seam, which needs no cache at all; the watermark remains a
+  best-effort disposable hint, never correctness authority.
+- **Real need versus speculative machinery:** a measured cost on a
+  real corpus that distinguishes the competing designs. At
+  adjudication scale (79 files, ~300 KB, 20 KB maximum) no probe can;
+  until one does, building anything here is speculation.
+- **Smallest step when the trigger fires:** design and measure the
+  summary/locator seam first (thread 8's recorded prerequisite and
+  the obligations it lists — identity re-validation at the lazy load,
+  task 22's bound at the second read site, task 27's sibling policy);
+  only afterward, and only with a demonstrated invalidation scheme,
+  weigh the watermark itself.
+
+Status stays `parked`; nothing above changes the claim.
