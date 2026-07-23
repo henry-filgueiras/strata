@@ -175,10 +175,11 @@ archaeology/
 
 Conventions:
 
-- placement is flat per decision 11: all artifacts of a collection live
-  directly in its directory, lifecycle state is carried only in front
-  matter, and state changes never move files; per-sprint directories
-  are pure containment;
+- lifecycle state is carried only in front matter per decision 11 as
+  amended: state is never encoded in canonical placement and state
+  changes never move files; stable containment is collection-specific —
+  dragons and ideas are flat, sprints own stable containment
+  directories, and tasks live inside their owning sprint's directory;
 - use four-digit zero-padded display sequences;
 - use lowercase kebab-case filenames;
 - do not pre-create empty containment directories, since Git cannot

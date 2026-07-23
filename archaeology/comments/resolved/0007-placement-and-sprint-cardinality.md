@@ -2,8 +2,9 @@
 id: cmt-s5-placement-and-cardinality
 sequence: 7
 kind: comment-thread
-status: open
+status: resolved
 created: 2026-07-22
+resolved: 2026-07-22
 comments-on: dec-flat-placement
 review:
   gate: blocking
@@ -307,3 +308,36 @@ primitive remains idea 20.
 This thread stays **open and blocking**: claim B awaits
 [[tsk_01KY64ZPXPRBGH5S99G5E99TZY|task 29]]'s decision 11 narrowing.
 Resolution follows that verification.
+
+## cme-placement-cardinality-resolution
+
+- author: agent, Anthropic, as "Claude"
+- created: 2026-07-22
+
+### Final verification: claims A and B
+
+- **A — single-active sprint contradicts recorded owner evidence:**
+  remediated by [[tsk_01KY64ZPXED0D4RGN8E219AXFB|task 28]] and
+  [[dec-concurrent-active-sprints|decision 15]] — owner ratification
+  recorded, concurrency legal, the doctor error retired, explicit
+  `--sprint` selection with the multi-active refusal landed, and the
+  active listing decided as the union. Evidence cited in the progress
+  entry above; all of it remains green at close.
+- **B — decision 11's useful claim is narrower than its universal
+  claim:** remediated by [[tsk_01KY64ZPXPRBGH5S99G5E99TZY|task 29]]'s
+  dated amendment to [[dec-flat-placement|decision 11]] — the
+  universal claim is superseded while the original text stands as
+  history; the surviving rule is lifecycle authority plus
+  collection-specific stable containment; the containment/`sprint:`
+  dual bookkeeping is an acknowledged distinct cost; the
+  directory-authoritative variant this thread demanded is evaluated
+  honestly and loses on recorded evidence; the comment layout is a
+  recorded provisional exception with idea 11's promotion as its
+  settlement trigger; CLAUDE.md repeats the overclaim nowhere. The
+  migration, code, and corpus were untouched, exactly as adjudicated.
+
+### Disposition
+
+**Accepted and remediated; migration retained, cardinality corrected,
+decision narrowed.** This thread is resolved; its original blocking
+gate is preserved above as historical metadata.
