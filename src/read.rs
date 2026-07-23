@@ -113,6 +113,32 @@ pub(crate) fn read_artifact_bytes(path: &Path) -> Result<String, Error> {
     })
 }
 
+/// The reason `content` violates the LF-only canonical format, or `None`
+/// when it conforms (decision 14).
+///
+/// Every managed artifact and `.strata.toml` is LF-only: CRLF sequences
+/// and bare carriage returns are refused before front-matter or TOML
+/// parsing rather than normalized, so byte-exact splicing and safe writes
+/// never become line-ending-sensitive. The diagnosis names the actual
+/// cause — it must never decay into "missing front matter" — and gives
+/// the repair.
+pub(crate) fn lf_violation(content: &str) -> Option<String> {
+    if !content.contains('\r') {
+        return None;
+    }
+    let cause = if content.contains("\r\n") {
+        "CRLF line endings"
+    } else {
+        "a bare carriage return (CR) with no following line feed"
+    };
+    Some(format!(
+        "contains {cause}; Strata's canonical format is LF-only \
+         (decision 14) — convert the file to LF line endings (for \
+         example with `dos2unix`) and keep the repository's \
+         `.gitattributes` line-ending policy"
+    ))
+}
+
 /// Lifecycle state of a managed artifact, carried only in front matter per
 /// decision 11: placement is flat, so the directory says nothing about
 /// state. One vocabulary spans every collection; which states a given
@@ -671,6 +697,10 @@ pub(crate) fn parse_artifact_at(
     };
 
     let content = read_artifact_bytes(path)?;
+
+    if let Some(reason) = lf_violation(&content) {
+        return Err(malformed(reason));
+    }
 
     let (front_matter, body) = split_front_matter(&content).ok_or_else(|| {
         malformed(
@@ -1693,6 +1723,59 @@ mod tests {
 
             expect_symlink_conflict(err, "0001-evil.md");
         }
+    }
+
+    // --- task 26: LF-only canonical format (decision 14) ---
+
+    #[test]
+    fn crlf_artifact_is_refused_naming_line_endings_not_front_matter() {
+        let tmp = temp_repo();
+        let crlf = dragon_markdown("id-1", 1, "open", "Windows checkout").replace('\n', "\r\n");
+        write_dragon(tmp.path(), DRAGONS_DIR, "0001-windows-checkout.md", &crlf);
+
+        let err = scan(tmp.path(), &DRAGON).unwrap_err();
+
+        match err {
+            Error::MalformedArtifact { path, reason } => {
+                assert!(path.ends_with("0001-windows-checkout.md"), "{path:?}");
+                assert!(reason.contains("CRLF"), "{reason}");
+                assert!(reason.contains("LF-only"), "{reason}");
+                assert!(reason.contains("convert"), "repair guidance: {reason}");
+                assert!(
+                    !reason.contains("missing front matter"),
+                    "must not decay into the front-matter diagnosis: {reason}"
+                );
+            }
+            other => panic!("expected malformed artifact, got {other:?}"),
+        }
+        // The refusal never touches the file.
+        assert_eq!(
+            fs::read_to_string(
+                tmp.path()
+                    .join(DRAGONS_DIR)
+                    .join("0001-windows-checkout.md")
+            )
+            .unwrap(),
+            crlf
+        );
+    }
+
+    #[test]
+    fn bare_carriage_return_is_diagnosed_distinctly_from_crlf() {
+        let tmp = temp_repo();
+        let content = dragon_markdown("id-1", 1, "open", "Classic Mac") + "stray\rreturn\n";
+        write_dragon(tmp.path(), DRAGONS_DIR, "0001-classic-mac.md", &content);
+
+        let err = scan(tmp.path(), &DRAGON).unwrap_err();
+
+        expect_malformed(err, "0001-classic-mac.md", "bare carriage return");
+    }
+
+    #[test]
+    fn lf_violation_accepts_lf_only_content() {
+        assert_eq!(lf_violation("---\nid: x\n---\n\n# T\n"), None);
+        assert!(lf_violation("---\r\nid: x\r\n---\r\n").is_some());
+        assert!(lf_violation("a\rb\n").is_some());
     }
 
     #[test]

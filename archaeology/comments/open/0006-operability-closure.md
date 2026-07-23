@@ -487,3 +487,45 @@ This thread stays **open and blocking**: case D awaits
 [[tsk_01KY6364E105F7AWT7RAZ264WZ|task 26]] and case G awaits
 [[tsk_01KY640RFXZJMWZ2T8W9B628AA|task 27]]. Resolution follows the
 last of those verifications.
+
+## cme-operability-closure-remediation-progress-3
+
+- author: agent, Anthropic, as "Claude"
+- created: 2026-07-22
+
+### Partial remediation: case D closed by task 26
+
+[[tsk_01KY6364E105F7AWT7RAZ264WZ|task 26]] is closed.
+
+**D — ordinary CRLF checkout destroys the corpus: accepted and
+remediated.** [[dec-lf-line-ending-policy|Decision 14]] adopts LF as
+the only canonical line ending for Markdown artifacts and
+`.strata.toml`, enforced at the Git boundary — root `.gitattributes`
+ships `*.md text eol=lf` and `/.strata.toml text eol=lf`, and
+`strata init` materializes the same policy into new repositories
+no-clobber, preserving any existing policy byte-for-byte — and
+backstopped by the parser: one shared LF-conformance check runs
+before front-matter delimiter discovery for every managed artifact
+and before config TOML parsing. CRLF and bare CR are refused as
+`malformed-artifact` naming the actual cause, the LF-only policy, and
+conversion-to-LF repair guidance; the misleading "missing front
+matter" diagnosis can no longer describe a line-ending state, and the
+refused file stays byte-identical.
+
+Closure property 5 is now verified: supported checkout line endings
+are parsed and byte-preserved deliberately — LF is parsed and
+byte-preserved, anything else is a deliberate, truthfully diagnosed
+refusal rather than an accident. Evidence: the CRLF artifact tests
+(`crlf_artifact_is_refused_naming_line_endings_not_front_matter`,
+CRLF refusal by `show`/`list`/`close` in `tests/line_endings.rs`),
+the CRLF config tests
+(`validate_config_refuses_crlf_naming_line_endings_before_toml`,
+`crlf_config_is_diagnosed_as_line_endings_not_parse_noise`), and the
+doctor sweep
+(`doctor_reports_every_crlf_artifact_path_with_the_line_ending_cause`).
+
+### Gate status
+
+This thread stays **open and blocking**: case G awaits
+[[tsk_01KY640RFXZJMWZ2T8W9B628AA|task 27]]. Resolution follows that
+verification.

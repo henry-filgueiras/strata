@@ -2,9 +2,10 @@
 id: tsk_01KY6364E105F7AWT7RAZ264WZ
 sequence: 26
 kind: task
-status: pending
+status: closed
 sprint: spr_01KY61D615FAC8VVSTD7QXX1DW
 created: 2026-07-22
+closed: 2026-07-22
 ---
 
 # Adopt a deliberate line-ending policy
@@ -45,3 +46,71 @@ parsed and byte-preserved deliberately (5).
 - `scripts/check.sh` and `strata doctor` are green at close.
 
 ## Result
+
+Closed 2026-07-22. Case D is remediated by
+[[dec-lf-line-ending-policy|decision 14]]: LF is the only canonical
+line ending for Strata Markdown artifacts and `.strata.toml`, enforced
+at the Git boundary and backstopped by the parser.
+
+**Decision and tradeoffs.** The rejected alternative — accept and
+byte-preserve CRLF — loses because it makes every splicer and
+safe-write path line-ending-sensitive, doubles the representation
+states every byte-level contract must cover, and weakens the
+repository-wide canonical-byte contract for no demonstrated benefit.
+Refusal keeps byte-exact splicing and
+`content_is_preserved_byte_for_byte` unambiguous. Silent normalization
+was separately rejected as an unrequested mutation.
+
+**Git boundary.** Root `.gitattributes` now ships exactly:
+
+```text
+*.md text eol=lf
+/.strata.toml text eol=lf
+```
+
+The present corpus was already LF, so adding the file produced no
+normalization diffs.
+
+**Init boundary.** `strata init` materializes the same template into
+new repositories with the atomic no-clobber discipline (shared
+`write_template`, the config still written last): a pre-existing
+regular `.gitattributes` is preserved byte-for-byte and never parsed —
+Strata cannot safely infer or merge arbitrary Git-attribute policies,
+so the parser's LF diagnosis remains the backstop for such
+repositories; a non-regular object at the path is an
+`artifact-conflict`; an initialized repository missing the file gains
+it on rerun; the created path appears in `InitReport`. Decision 5's
+nontransactional empty-directory boundary is unchanged, and no Git
+executable or `.git` directory is required.
+
+**Shared check and diagnosis.** One shared check,
+`read::lf_violation`, runs before front-matter delimiter discovery in
+`parse_artifact_at` (every managed artifact, so `list`, `show`,
+transitions, and doctor all inherit it) and before TOML parsing in
+`repo::validate_config` (init and discovery). CRLF and bare CR are
+each refused as `malformed-artifact` naming the actual cause, the
+LF-only policy, and conversion-to-LF repair guidance; the refusal
+never decays into "missing front matter" and never touches the file.
+Doctor collects line-ending findings with correct paths; a CRLF
+`.strata.toml` blocks discovery but its direct error names line
+endings truthfully.
+
+**Evidence.** Unit:
+`crlf_artifact_is_refused_naming_line_endings_not_front_matter`,
+`bare_carriage_return_is_diagnosed_distinctly_from_crlf`,
+`lf_violation_accepts_lf_only_content`,
+`validate_config_refuses_crlf_naming_line_endings_before_toml`,
+`init_materializes_the_line_ending_policy`,
+`existing_gitattributes_is_preserved_byte_for_byte_and_never_parsed`,
+`gitattributes_path_occupied_by_directory_is_a_conflict`,
+`initialized_repository_missing_gitattributes_gains_it_on_rerun`.
+Integration (`tests/line_endings.rs`, `tests/init.rs`): CRLF refusal
+by `show`, `list`, and `close` with byte-identical files; bare-CR
+distinct diagnosis; doctor naming every CRLF path and cause; CRLF
+config diagnosis; LF parse/transition byte preservation;
+`shipped_gitattributes_carries_the_exact_two_policy_rules`; fresh-init
+materialization without Git; idempotent rerun; preserved existing
+policy; refused directory conflict. Complete suite 325 tests green
+(204 lib + 121 integration); `strata doctor` 60 artifacts, no
+problems; `scripts/check.sh` passes. Task 24 title/rollback and
+task 25 representation regressions remain green.
