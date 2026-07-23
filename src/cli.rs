@@ -29,6 +29,10 @@ pub enum Command {
         collection: Collection,
         /// Human-readable title for the artifact
         title: String,
+        /// Emit a deterministic JSON object describing the created
+        /// artifact instead of the human-readable line
+        #[arg(long)]
+        json: bool,
     },
     /// List the artifacts in a collection
     List {

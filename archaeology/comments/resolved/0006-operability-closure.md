@@ -2,8 +2,9 @@
 id: cmt-s5-operability-closure
 sequence: 6
 kind: comment-thread
-status: open
+status: resolved
 created: 2026-07-22
+resolved: 2026-07-22
 comments-on: spr-placement-and-sprints
 review:
   gate: blocking
@@ -529,3 +530,69 @@ doctor sweep
 This thread stays **open and blocking**: case G awaits
 [[tsk_01KY640RFXZJMWZ2T8W9B628AA|task 27]]. Resolution follows that
 verification.
+
+## cme-operability-closure-resolution
+
+- author: agent, Anthropic, as "Claude"
+- created: 2026-07-22
+
+### Final remediation verification: cases A–G
+
+All seven adjudicated cases now have landed, verified remediations:
+
+- **A — generated title invalidates its own artifact:**
+  [[tsk_01KY6364DMJ7DPEWCAK0ZKDNHR|task 24]], shared
+  `validate_title` refusing control characters across all four
+  creators before any work.
+- **B and C (representation and addressability surface):**
+  [[tsk_01KY62E9VMB6HDNJWD31YS1FBP|task 23]] and
+  [[tsk_01KY63M06RB0R4Z9CGSVNAJJKB|task 25]], the claimant catalog
+  and the decision 12 canonical representation contract.
+- **D — CRLF checkout destroys the corpus:**
+  [[tsk_01KY6364E105F7AWT7RAZ264WZ|task 26]],
+  [[dec-lf-line-ending-policy|decision 14]]'s LF-only format with
+  Git-boundary enforcement and the truthful parser diagnosis.
+- **E — provenance binding can create a doctor-red artifact:**
+  task 25's marker round-trip validation before mutation.
+- **F — failed sprint creation leaves structural debris:** task 24's
+  recorded-directory rollback in reverse creation order.
+- **G — creation and reads apply incompatible corpus policies:**
+  [[tsk_01KY640RFXZJMWZ2T8W9B628AA|task 27]] implementing
+  [[dec-degraded-corpus-operability|decision 13]]'s documented
+  degraded mode.
+
+### Executable evidence for the five closure properties
+
+1. **Every artifact an intent command produces passes doctor:**
+   `each_kind_round_trips_through_show_and_doctor_stays_green`
+   (task 24), and
+   `creation_adds_no_doctor_finding_beyond_the_preexisting_sibling`
+   (task 27) extends it to degraded corpora.
+2. **Doctor-green implies showable, addressable, operable:**
+   task 25's addressability suite
+   (`binding_to_a_single_bracket_title_succeeds_and_doctor_stays_green`);
+   per artifact beside a red sibling, the honest form decision 13
+   allowed: reachability is qualified truthfully
+   (`creation_beside_a_malformed_sibling_allocates_past_it_with_the_warning`)
+   and restored by repairing only the blocker
+   (`removing_only_the_blocker_restores_full_access_without_touching_the_artifact`).
+3. **A successful mutation leaves the repository doctor-green:**
+   task 25's pre-mutation marker validation
+   (`binding_to_a_double_bracket_title_is_refused_before_mutation`).
+4. **A returned mutation error preserves the previously valid
+   state:** task 24's sprint rollback suite
+   (`failed_sprint_write_rolls_back_created_directories_and_returns_the_original_error`)
+   and task 27's refused-transition byte preservation
+   (`admitted_transition_refuses_naming_target_and_blocker_leaving_bytes_unchanged`).
+5. **Supported checkout line endings are parsed and byte-preserved
+   deliberately:** task 26's LF/CRLF matrix
+   (`lf_artifacts_still_parse_transition_and_preserve_unrelated_bytes`,
+   `crlf_artifact_is_refused_naming_line_endings_not_front_matter`,
+   `doctor_reports_every_crlf_artifact_path_with_the_line_ending_cause`).
+
+### Disposition
+
+**Accepted and remediated.** No accepted case remains ownerless:
+A/F → task 24, B/C/E → tasks 23 and 25, D → task 26, G → task 27,
+all closed with evidence. This thread is resolved; its original
+blocking gate is preserved above as historical metadata.

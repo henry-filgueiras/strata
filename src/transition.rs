@@ -69,7 +69,7 @@ pub fn transition_with_provenance(
     to: Status,
     edge: Option<(&'static str, &str)>,
 ) -> Result<Transition, Error> {
-    let artifacts = read::scan_collection(root, collection)?;
+    let artifacts = read::scan_collection(root, collection).map_err(|err| err.blocking(display))?;
     let artifact = read::resolve(&artifacts, target, display)?;
     let edge_line = edge
         .map(|(key, raw)| resolve_edge(root, key, raw))
@@ -209,9 +209,10 @@ fn resolve_edge(root: &Path, key: &'static str, raw: &str) -> Result<(String, St
 /// to close or reassign them; an empty sprint closes like any other
 /// artifact, stamping its `closed:` date.
 pub fn close_sprint(root: &Path, target: Selector<'_>, display: &str) -> Result<Transition, Error> {
-    let sprints = read::scan_sprints(root)?;
+    let sprints = read::scan_sprints(root).map_err(|err| err.blocking(display))?;
     let sprint = read::resolve(&sprints, target, display)?;
-    let pending: Vec<String> = read::scan_tasks(root)?
+    let pending: Vec<String> = read::scan_tasks(root)
+        .map_err(|err| err.blocking(display))?
         .iter()
         .filter(|task| {
             task.summary.status == Status::Pending

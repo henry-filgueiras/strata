@@ -35,6 +35,8 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
+
 use crate::error::Error;
 use crate::read::{Collection, DRAGON, IDEA, SPRINT, Status, TASK};
 use crate::repo::{SPRINT_FILE, SPRINTS_DIR};
@@ -72,6 +74,96 @@ impl NewArtifact {
     pub fn reference(&self) -> String {
         format!("{}:{}", self.kind, self.sequence)
     }
+
+    /// The `new --json` projection of this creation. Field names and
+    /// order are a compatibility surface pinned by tests; healthy and
+    /// degraded creation share this schema (decision 13).
+    pub fn record(&self) -> NewRecord<'_> {
+        NewRecord {
+            kind: self.kind,
+            id: &self.id,
+            sequence: self.sequence,
+            reference: self.reference(),
+            path: self.relative_path.display().to_string(),
+        }
+    }
+}
+
+/// The `strata new --json` stdout payload: one deterministic object per
+/// creation, identical for healthy and degraded creation (decision 13 —
+/// the degraded warning rides stderr, never this object).
+#[derive(Debug, Serialize)]
+pub struct NewRecord<'a> {
+    /// Canonical singular kind name, e.g. `dragon`.
+    kind: &'a str,
+    /// Stable opaque identity.
+    id: &'a str,
+    /// Collection-scoped display sequence.
+    sequence: u32,
+    /// Canonical reference, e.g. `dragon:2`.
+    reference: String,
+    /// Root-relative path with `/` separators.
+    path: String,
+}
+
+/// Reachability of a just-created flat artifact through the normal
+/// strict read path (decision 13).
+#[derive(Debug)]
+pub enum Reachability {
+    /// The strict scan succeeded and the artifact resolves by sequence
+    /// and by stable id: created and normally reachable.
+    Reachable,
+    /// Created successfully, but repository degradation currently blocks
+    /// normal access. Holds the deterministic blocking description — the
+    /// blocking sibling path with its reason, or the precise blocking
+    /// reason when no single path applies.
+    Degraded { blocker: String },
+}
+
+/// Observational post-write reachability probe for flat creation
+/// (decision 13).
+///
+/// Runs the corresponding normal strict read path after a successful
+/// write and proves the new artifact resolves by both sequence and
+/// stable id. Purely observational: a failed probe never rolls back the
+/// already-successful creation, never mutates anything, and never turns
+/// into a nonzero exit — the caller reports the degraded state instead.
+/// The strict scan's first failure is by construction the deterministic
+/// blocking artifact.
+pub fn probe_reachability(
+    root: &Path,
+    collection: &Collection,
+    created: &NewArtifact,
+) -> Reachability {
+    let artifacts = match crate::read::scan(root, collection) {
+        Ok(artifacts) => artifacts,
+        Err(err) => {
+            return Reachability::Degraded {
+                blocker: err.to_string(),
+            };
+        }
+    };
+    let display = created.reference();
+    let by_sequence = crate::read::resolve(
+        &artifacts,
+        crate::read::Selector::Sequence(created.sequence),
+        &display,
+    );
+    if let Err(err) = by_sequence {
+        return Reachability::Degraded {
+            blocker: err.to_string(),
+        };
+    }
+    if let Err(err) = crate::read::resolve(
+        &artifacts,
+        crate::read::Selector::Id(&created.id),
+        &created.id,
+    ) {
+        return Reachability::Degraded {
+            blocker: err.to_string(),
+        };
+    }
+    Reachability::Reachable
 }
 
 /// Create a new open dragon in the repository at `root`.

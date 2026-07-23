@@ -22,7 +22,11 @@ fn main() -> ExitCode {
 fn run(command: &Command) -> Result<(), Error> {
     match command {
         Command::Init => init(),
-        Command::New { collection, title } => new_artifact(*collection, title),
+        Command::New {
+            collection,
+            title,
+            json,
+        } => new_artifact(*collection, title, *json),
         Command::List {
             collection,
             json,
@@ -143,9 +147,13 @@ fn close(target: &ArtifactTarget, resolved_by: Option<&str>) -> Result<(), Error
     let collection = match target {
         ArtifactTarget::Reference(reference) => reference.collection,
         ArtifactTarget::Id(id) => {
-            let mut union = read::scan(&root, &read::DRAGON)?;
-            union.extend(read::scan_sprints(&root)?);
-            union.extend(read::scan_tasks(&root)?);
+            let union = || -> Result<Vec<read::Artifact>, Error> {
+                let mut all = read::scan(&root, &read::DRAGON)?;
+                all.extend(read::scan_sprints(&root)?);
+                all.extend(read::scan_tasks(&root)?);
+                Ok(all)
+            };
+            let union = union().map_err(|err| err.blocking(id))?;
             let artifact = read::resolve(&union, read::Selector::Id(id), id)?;
             match artifact.summary.kind.as_str() {
                 "sprint" => Collection::Sprint,
@@ -272,7 +280,16 @@ fn cwd() -> Result<PathBuf, Error> {
 }
 
 /// Create an artifact in the enclosing repository and render the outcome.
-fn new_artifact(collection: Collection, title: &str) -> Result<(), Error> {
+///
+/// Human and JSON projections consume the same semantic result: the
+/// created artifact plus its decision 13 reachability. Flat creation
+/// (dragons, ideas) runs the observational post-write probe; sprint and
+/// task creation performed their strict containment scans before
+/// writing, so a successful write is reachable by construction. A
+/// degraded creation stays exit 0 — the write happened — with the stable
+/// `warning[degraded-repository]:` line on stderr, leaving stdout (human
+/// line or JSON object) unpolluted.
+fn new_artifact(collection: Collection, title: &str, json: bool) -> Result<(), Error> {
     let root = repo::discover(&cwd()?)?;
     let created = match collection {
         Collection::Dragon => artifact::create_dragon(&root, title)?,
@@ -280,11 +297,30 @@ fn new_artifact(collection: Collection, title: &str) -> Result<(), Error> {
         Collection::Sprint => artifact::create_sprint(&root, title)?,
         Collection::Task => artifact::create_task(&root, title)?,
     };
-    println!(
-        "created {} at {}",
-        created.reference(),
-        created.relative_path.display()
-    );
+    let reachability = match collection {
+        Collection::Dragon => artifact::probe_reachability(&root, &read::DRAGON, &created),
+        Collection::Idea => artifact::probe_reachability(&root, &read::IDEA, &created),
+        Collection::Sprint | Collection::Task => artifact::Reachability::Reachable,
+    };
+    if json {
+        println!("{}", to_json(&created.record()));
+    } else {
+        println!(
+            "created {} at {}",
+            created.reference(),
+            created.relative_path.display()
+        );
+    }
+    if let artifact::Reachability::Degraded { blocker } = &reachability {
+        eprintln!(
+            "warning[degraded-repository]: created {} at {}, but repository \
+             degradation currently blocks normal access — {blocker}; the \
+             artifact was created and the exit status remains success; \
+             repairing the blocker restores normal access",
+            created.reference(),
+            created.relative_path.display()
+        );
+    }
     Ok(())
 }
 
@@ -343,14 +379,23 @@ fn list(collection: Collection, json: bool, active: bool) -> Result<(), Error> {
 /// scanned and the id resolved over the union.
 fn show(target: &ArtifactTarget, json: bool) -> Result<(), Error> {
     let root = repo::discover(&cwd()?)?;
+    // A sibling that blocks the strict scan gets the requested target
+    // attached (decision 13): the diagnostic names what could not be
+    // delivered as well as what blocked it.
+    let display = target.to_string();
     let artifacts = match target {
-        ArtifactTarget::Reference(reference) => scan(&root, reference.collection)?,
+        ArtifactTarget::Reference(reference) => {
+            scan(&root, reference.collection).map_err(|err| err.blocking(&display))?
+        }
         ArtifactTarget::Id(_) => {
-            let mut all = read::scan(&root, &read::DRAGON)?;
-            all.extend(read::scan(&root, &read::IDEA)?);
-            all.extend(read::scan_sprints(&root)?);
-            all.extend(read::scan_tasks(&root)?);
-            all
+            let union = || -> Result<Vec<read::Artifact>, Error> {
+                let mut all = read::scan(&root, &read::DRAGON)?;
+                all.extend(read::scan(&root, &read::IDEA)?);
+                all.extend(read::scan_sprints(&root)?);
+                all.extend(read::scan_tasks(&root)?);
+                Ok(all)
+            };
+            union().map_err(|err| err.blocking(&display))?
         }
     };
     let artifact = read::resolve(&artifacts, selector(target), &target.to_string())?;
