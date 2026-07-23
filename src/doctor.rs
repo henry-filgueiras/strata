@@ -181,27 +181,10 @@ pub fn check(root: &Path) -> Result<Report, Error> {
     }
     findings.extend(task_findings);
 
-    // At most one sprint may be active (the `new sprint` refusal, verified
-    // here because a branch merge can produce the state no command allows).
-    let active: Vec<&str> = artifacts
-        .iter()
-        .filter(|artifact| {
-            artifact.summary.kind == "sprint" && artifact.summary.status == read::Status::Active
-        })
-        .map(|artifact| artifact.summary.path.as_str())
-        .collect();
-    if active.len() > 1 {
-        findings.push(Finding {
-            problem: "multiple-active-sprints",
-            path: active[0].into(),
-            detail: format!(
-                "at most one sprint may be active, but {} are: {}",
-                active.len(),
-                active.join(", ")
-            ),
-            severity: Severity::Error,
-        });
-    }
+    // Active-sprint cardinality is not repository validity (decision 15):
+    // concurrent active sprints are legal, and the former
+    // `multiple-active-sprints` error is retired with no successor at any
+    // tier.
 
     // Typed edges (decision 10): validated over the cleanly parsed
     // artifacts against the identity claimant catalog, so provenance
@@ -1221,25 +1204,17 @@ mod tests {
     }
 
     #[test]
-    fn multiple_active_sprints_are_an_error_naming_every_path() {
+    fn concurrent_active_sprints_are_doctor_green() {
+        // Decision 15: active-sprint cardinality is not repository
+        // validity; the former `multiple-active-sprints` error is retired.
         let tmp = temp_repo();
         seed_sprint(tmp.path(), "0001-branch-a", 1, "active");
         seed_sprint(tmp.path(), "0002-branch-b", 2, "active");
 
         let report = check(tmp.path()).unwrap();
 
-        assert_eq!(
-            problems(&report),
-            vec![(
-                "multiple-active-sprints",
-                "archaeology/sprints/0001-branch-a/sprint.md"
-            )]
-        );
-        assert!(
-            report.findings[0].detail.contains("0002-branch-b"),
-            "{}",
-            report.findings[0].detail
-        );
+        assert!(report.healthy(), "{:?}", report.findings);
+        assert_eq!(report.artifacts_checked, 2);
     }
 
     #[test]

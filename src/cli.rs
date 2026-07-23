@@ -25,10 +25,15 @@ pub enum Command {
     /// Create an artifact; Strata assigns its sequence, slug, and identity
     New {
         /// Collection for the new artifact (`dragon`, `idea`, `sprint`, or
-        /// `task`; tasks are created in the active sprint)
+        /// `task`; tasks are created in an active sprint, chosen with
+        /// `--sprint` when several are active)
         collection: Collection,
         /// Human-readable title for the artifact
         title: String,
+        /// Tasks only: the owning sprint, as `sprint:N` or a sprint's
+        /// stable id; required when more than one sprint is active
+        #[arg(long)]
+        sprint: Option<String>,
         /// Emit a deterministic JSON object describing the created
         /// artifact instead of the human-readable line
         #[arg(long)]
@@ -41,7 +46,7 @@ pub enum Command {
         /// Emit a deterministic JSON array instead of human-readable lines
         #[arg(long)]
         json: bool,
-        /// Tasks only: list only the active sprint's tasks
+        /// Tasks only: list only the tasks owned by active sprints
         #[arg(long)]
         active: bool,
     },

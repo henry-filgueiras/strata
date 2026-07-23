@@ -181,9 +181,10 @@ pub fn create_idea(root: &Path, title: &str) -> Result<NewArtifact, Error> {
 /// Create a new active sprint in the repository at `root`.
 ///
 /// A sprint artifact is `sprint.md` inside a fresh containment directory
-/// `NNNN-slug/`; the directory name carries the display sequence. At most
-/// one sprint may be active, so creation is refused while one is —
-/// naming it, since the caller's next move is usually to close it.
+/// `NNNN-slug/`; the directory name carries the display sequence.
+/// Concurrent active sprints are legal (decision 15): creation performs
+/// the strict sprint scan it needs for sequence allocation, but another
+/// active sprint is never a refusal.
 ///
 /// Deliberate duplication of [`create`] (idea 10 discipline): the
 /// containment-directory layout diverges from flat files at almost every
@@ -214,21 +215,6 @@ fn create_sprint_with(
     })?;
 
     let sprints = crate::read::scan_sprints(root)?;
-    if let Some(active) = sprints
-        .iter()
-        .find(|sprint| sprint.summary.status == Status::Active)
-    {
-        return Err(Error::InvalidInvocation {
-            message: format!(
-                "sprint `{}` ({}) is still active; at most one sprint may be \
-                 active — close it with `strata close {}` first",
-                active.summary.reference(),
-                active.summary.title,
-                active.summary.reference()
-            ),
-        });
-    }
-
     let max = sprints
         .iter()
         .map(|sprint| sprint.summary.sequence)
@@ -382,12 +368,19 @@ fn create(
     })
 }
 
-/// Create a new pending task in the active sprint at `root`.
+/// Create a new pending task at `root`, owned by one active sprint.
 ///
-/// Tasks require an active sprint: the new file lands in its containment
-/// directory, stamps the sprint's stable id into the `sprint:` field, and
-/// takes the next display sequence globally across every sprint.
-pub fn create_task(root: &Path, title: &str) -> Result<NewArtifact, Error> {
+/// `sprint` is the explicit `--sprint` selection as `(selector, display)`;
+/// without it, the owning sprint is inferred only when exactly one sprint
+/// is active (decision 15). The new file lands in the chosen sprint's
+/// containment directory, stamps that sprint's stable id into the
+/// `sprint:` field, and takes the next display sequence globally across
+/// every sprint.
+pub fn create_task(
+    root: &Path,
+    title: &str,
+    sprint: Option<(crate::read::Selector<'_>, &str)>,
+) -> Result<NewArtifact, Error> {
     const SECTIONS: &[&str] = &["Objective", "Acceptance criteria"];
     validate_title(TASK.kind, title)?;
     let title = title.trim();
@@ -399,16 +392,63 @@ pub fn create_task(root: &Path, title: &str) -> Result<NewArtifact, Error> {
     })?;
 
     let sprints = crate::read::scan_sprints(root)?;
-    let Some(active) = sprints
-        .iter()
-        .find(|sprint| sprint.summary.status == Status::Active)
-    else {
-        return Err(Error::InvalidInvocation {
-            message: "tasks belong to a sprint, and no sprint is active; \
-                      open one with `strata new sprint \"<goal>\"` first"
-                .into(),
-        });
+    let chosen = match sprint {
+        Some((selector, display)) => {
+            // Explicit selection resolves through the established typed
+            // contracts (not-found, ambiguity), then requires the sprint
+            // to be active — a closed sprint is refused before writing.
+            let sprint = crate::read::resolve(&sprints, selector, display)?;
+            if sprint.summary.status != Status::Active {
+                return Err(Error::InvalidInvocation {
+                    message: format!(
+                        "sprint `{}` ({}) is {}; tasks are created only in \
+                         an active sprint",
+                        sprint.summary.reference(),
+                        sprint.summary.title,
+                        sprint.summary.status
+                    ),
+                });
+            }
+            sprint
+        }
+        None => {
+            let active: Vec<&crate::read::Artifact> = sprints
+                .iter()
+                .filter(|sprint| sprint.summary.status == Status::Active)
+                .collect();
+            match active.as_slice() {
+                [] => {
+                    return Err(Error::InvalidInvocation {
+                        message: "tasks belong to a sprint, and no sprint is \
+                                  active; open one with `strata new sprint \
+                                  \"<goal>\"` first"
+                            .into(),
+                    });
+                }
+                [only] => *only,
+                // Never resolved by scan order (decision 15): the refusal
+                // names every active sprint, deterministically ordered by
+                // the scan's sequence-then-path sort.
+                several => {
+                    let candidates: Vec<String> = several
+                        .iter()
+                        .map(|sprint| {
+                            format!("{} ({})", sprint.summary.reference(), sprint.summary.title)
+                        })
+                        .collect();
+                    return Err(Error::InvalidInvocation {
+                        message: format!(
+                            "{} sprints are active: {}; pass `--sprint \
+                             <sprint-ref>` to choose the owning sprint",
+                            several.len(),
+                            candidates.join(", ")
+                        ),
+                    });
+                }
+            }
+        }
     };
+    let active = chosen;
 
     let tasks = crate::read::scan_tasks(root)?;
     let max = tasks
@@ -1076,14 +1116,14 @@ mod tests {
             create_idea(tmp.path(), bad).unwrap_err(),
             // No sprint is active, yet the refusal is about the title:
             // validation precedes the active-sprint scan.
-            create_task(tmp.path(), bad).unwrap_err(),
+            create_task(tmp.path(), bad, None).unwrap_err(),
         ] {
             assert!(matches!(err, Error::InvalidInvocation { .. }), "{err:?}");
             assert!(err.to_string().contains("U+000A"), "{err}");
         }
 
         // A sprint is active, yet the refusal is about the title: sprint
-        // validation precedes the one-active-sprint check too.
+        // title validation precedes every scan.
         create_sprint(tmp.path(), "Occupied").unwrap();
         let err = create_sprint(tmp.path(), bad).unwrap_err();
         assert!(matches!(err, Error::InvalidInvocation { .. }), "{err:?}");
@@ -1276,17 +1316,22 @@ mod tests {
     }
 
     #[test]
-    fn create_sprint_is_refused_while_one_is_active() {
+    fn concurrent_active_sprints_are_created_normally() {
+        // Decision 15 supersedes the former
+        // `a_second_active_sprint_is_refused_naming_the_first` regression:
+        // another active sprint is never a refusal.
         let tmp = temp_repo();
         create_sprint(tmp.path(), "First").unwrap();
 
-        let err = create_sprint(tmp.path(), "Second").unwrap_err();
+        let second = create_sprint(tmp.path(), "Second").unwrap();
 
-        assert!(matches!(err, Error::InvalidInvocation { .. }), "{err:?}");
-        let message = err.to_string();
+        assert_eq!(second.sequence, 2);
         assert!(
-            message.contains("sprint:1") && message.contains("strata close"),
-            "the refusal must name the active sprint and the way out: {message}"
+            tmp.path()
+                .join(SPRINTS_DIR)
+                .join("0002-second")
+                .join(SPRINT_FILE)
+                .is_file()
         );
     }
 

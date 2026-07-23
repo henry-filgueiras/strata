@@ -267,3 +267,43 @@ threads. Parked as [[ide_01KY64ZPXVR0XRZBHKERBXXJ0C|idea 20]] with
 
 This thread stays **open and blocking** until tasks 28 and 29 land and
 are verified.
+
+## cme-placement-cardinality-remediation-progress-1
+
+- author: agent, Anthropic, as "Claude"
+- created: 2026-07-22
+
+### Partial remediation: claim A closed by task 28
+
+[[tsk_01KY64ZPXED0D4RGN8E219AXFB|task 28]] is closed.
+
+**A — single-active sprint contradicts recorded owner evidence:
+accepted and remediated.** Owner ratification is recorded:
+[[dec-concurrent-active-sprints|decision 15]] documents that Henry
+ratified concurrent active sprints on 2026-07-22, so idea 14's
+standing position stands rather than being superseded. The
+remediation landed exactly the interaction surface this thread
+predicted: `new sprint` no longer refuses concurrency
+(`concurrent_active_sprints_are_created_normally_and_doctor_green`);
+doctor's `multiple-active-sprints` error is retired outright with no
+re-tiered successor
+(`concurrent_active_sprints_are_doctor_green`); `new task --sprint
+<ref>` selects explicitly by `sprint:N` or stable id
+(`explicit_sequence_selection_places_the_task_in_the_chosen_sprint`,
+`explicit_stable_id_selection_places_the_task_in_the_chosen_sprint`);
+bare `new task` infers only a unique active sprint and refuses
+multi-active ambiguity by naming every candidate rather than
+resolving by scan order
+(`bare_task_creation_with_multiple_active_sprints_refuses_naming_all`);
+and `list tasks --active` is the decided union across active sprints
+(`list_tasks_active_is_the_union_across_all_active_sprints`). The
+mutex misuse this thread warned against is disposed of in Sprint 6's
+dated amendment: the incident hold runs through thread 3's explicit
+closure protocol, not sprint cardinality, and the review-hold
+primitive remains idea 20.
+
+### Gate status
+
+This thread stays **open and blocking**: claim B awaits
+[[tsk_01KY64ZPXPRBGH5S99G5E99TZY|task 29]]'s decision 11 narrowing.
+Resolution follows that verification.

@@ -1,6 +1,7 @@
 //! Integration tests for the `task` collection through the compiled
-//! binary: creation in the active sprint, discovery across sprints,
-//! listing with the active filter, and closure.
+//! binary: creation in an active sprint (inferred or `--sprint`-selected
+//! per decision 15), discovery across sprints, listing with the active
+//! filter, and closure.
 
 use std::fs;
 use std::path::Path;
@@ -245,4 +246,225 @@ fn hand_seeded_task_identities_close_by_id_without_rewrites() {
     );
     assert!(content.contains("status: closed"), "{content}");
     assert_doctor_healthy(tmp.path());
+}
+
+// --- decision 15: concurrent active sprints and explicit placement ---
+
+/// Two active sprints created through the CLI; returns the stable id of
+/// the second, harvested from `new sprint --json`.
+fn seed_two_active_sprints(root: &Path) -> String {
+    assert!(
+        strata_in(root, &["new", "sprint", "Alpha"])
+            .status
+            .success()
+    );
+    let out = strata_in(root, &["new", "sprint", "Beta", "--json"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let payload: serde_json::Value = serde_json::from_str(stdout(&out).trim()).unwrap();
+    payload["id"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn bare_task_creation_with_multiple_active_sprints_refuses_naming_all() {
+    let tmp = init_repo();
+    seed_two_active_sprints(tmp.path());
+
+    let out = strata_in(tmp.path(), &["new", "task", "Homeless work"]);
+
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(err.starts_with("error[invalid-invocation]:"), "{err}");
+    for needle in ["sprint:1", "Alpha", "sprint:2", "Beta", "--sprint"] {
+        assert!(err.contains(needle), "missing `{needle}`:\n{err}");
+    }
+    for dir in ["0001-alpha", "0002-beta"] {
+        let entries: Vec<_> = fs::read_dir(tmp.path().join(SPRINTS_DIR).join(dir))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(entries, vec!["sprint.md"], "refusal must write nothing");
+    }
+}
+
+#[test]
+fn explicit_sequence_selection_places_the_task_in_the_chosen_sprint() {
+    let tmp = init_repo();
+    seed_two_active_sprints(tmp.path());
+
+    let out = strata_in(
+        tmp.path(),
+        &["new", "task", "Alpha work", "--sprint", "sprint:1"],
+    );
+
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        tmp.path()
+            .join(SPRINTS_DIR)
+            .join("0001-alpha/0001-alpha-work.md")
+            .is_file(),
+        "the task lands only in the chosen sprint"
+    );
+    assert!(
+        !tmp.path()
+            .join(SPRINTS_DIR)
+            .join("0002-beta/0001-alpha-work.md")
+            .exists()
+    );
+    assert_doctor_healthy(tmp.path());
+}
+
+#[test]
+fn explicit_stable_id_selection_places_the_task_in_the_chosen_sprint() {
+    let tmp = init_repo();
+    let beta_id = seed_two_active_sprints(tmp.path());
+
+    let out = strata_in(
+        tmp.path(),
+        &["new", "task", "Beta work", "--sprint", &beta_id],
+    );
+
+    assert!(out.status.success(), "{}", stderr(&out));
+    let content = fs::read_to_string(
+        tmp.path()
+            .join(SPRINTS_DIR)
+            .join("0002-beta/0001-beta-work.md"),
+    )
+    .unwrap();
+    assert!(
+        content.contains(&format!("sprint: {beta_id}")),
+        "the task carries the chosen sprint's id:\n{content}"
+    );
+}
+
+#[test]
+fn a_closed_selected_sprint_is_refused_before_writing() {
+    let tmp = init_repo();
+    seed_closed_sprint_with_task(tmp.path(), 1, 1);
+    assert!(
+        strata_in(tmp.path(), &["new", "sprint", "Current"])
+            .status
+            .success()
+    );
+
+    let out = strata_in(
+        tmp.path(),
+        &["new", "task", "Late work", "--sprint", "sprint:1"],
+    );
+
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(err.contains("sprint:1") && err.contains("closed"), "{err}");
+    let entries: Vec<_> = fs::read_dir(tmp.path().join(SPRINTS_DIR).join("0001-history"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(entries.len(), 2, "the refusal must write nothing");
+}
+
+#[test]
+fn non_sprint_selectors_and_misplaced_sprint_flags_are_refused() {
+    let tmp = init_repo();
+    seed_two_active_sprints(tmp.path());
+
+    // A sequence reference into a non-sprint collection cannot name the
+    // owning sprint.
+    let out = strata_in(
+        tmp.path(),
+        &["new", "task", "Confused", "--sprint", "dragon:1"],
+    );
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("dragon"), "{}", stderr(&out));
+
+    // `--sprint` belongs to task creation only.
+    for kind in ["dragon", "idea", "sprint"] {
+        let out = strata_in(
+            tmp.path(),
+            &["new", kind, "Misflagged", "--sprint", "sprint:1"],
+        );
+        assert_eq!(out.status.code(), Some(2), "{kind}: {}", stderr(&out));
+        assert!(
+            stderr(&out).starts_with("error[invalid-invocation]:"),
+            "{}",
+            stderr(&out)
+        );
+        assert!(stderr(&out).contains(kind), "{}", stderr(&out));
+    }
+}
+
+#[test]
+fn task_sequences_are_global_across_concurrent_sprints() {
+    let tmp = init_repo();
+    seed_two_active_sprints(tmp.path());
+
+    let first = strata_in(
+        tmp.path(),
+        &["new", "task", "In alpha", "--sprint", "sprint:1"],
+    );
+    assert!(first.status.success(), "{}", stderr(&first));
+    assert!(
+        stdout(&first).contains("created task:1"),
+        "{}",
+        stdout(&first)
+    );
+
+    let second = strata_in(
+        tmp.path(),
+        &["new", "task", "In beta", "--sprint", "sprint:2"],
+    );
+    assert!(second.status.success(), "{}", stderr(&second));
+    assert!(
+        stdout(&second).contains("created task:2"),
+        "sequences span concurrent sprints: {}",
+        stdout(&second)
+    );
+    assert_doctor_healthy(tmp.path());
+}
+
+#[test]
+fn list_tasks_active_is_the_union_across_all_active_sprints() {
+    let tmp = init_repo();
+    seed_closed_sprint_with_task(tmp.path(), 1, 1);
+    assert!(
+        strata_in(tmp.path(), &["new", "sprint", "Alpha"])
+            .status
+            .success()
+    );
+    assert!(
+        strata_in(tmp.path(), &["new", "sprint", "Beta"])
+            .status
+            .success()
+    );
+    for (title, sprint) in [("Alpha work", "sprint:2"), ("Beta work", "sprint:3")] {
+        assert!(
+            strata_in(tmp.path(), &["new", "task", title, "--sprint", sprint])
+                .status
+                .success()
+        );
+    }
+
+    let human = strata_in(tmp.path(), &["list", "tasks", "--active"]);
+    assert!(human.status.success(), "{}", stderr(&human));
+    let text = stdout(&human);
+    assert!(
+        text.contains("task:2") && text.contains("task:3"),
+        "the union spans every active sprint:\n{text}"
+    );
+    assert!(
+        !text.contains("task:1"),
+        "closed sprints' tasks are excluded:\n{text}"
+    );
+
+    let json = strata_in(tmp.path(), &["list", "tasks", "--active", "--json"]);
+    assert!(json.status.success(), "{}", stderr(&json));
+    let listed: serde_json::Value = serde_json::from_str(stdout(&json).trim()).unwrap();
+    let tasks = listed.as_array().unwrap();
+    let sequences: Vec<u64> = tasks
+        .iter()
+        .map(|t| t["sequence"].as_u64().unwrap())
+        .collect();
+    assert_eq!(
+        sequences,
+        vec![2, 3],
+        "same filtered set, deterministic global order"
+    );
 }

@@ -25,8 +25,9 @@ fn run(command: &Command) -> Result<(), Error> {
         Command::New {
             collection,
             title,
+            sprint,
             json,
-        } => new_artifact(*collection, title, *json),
+        } => new_artifact(*collection, title, sprint.as_deref(), *json),
         Command::List {
             collection,
             json,
@@ -270,6 +271,29 @@ fn fortune() -> Result<(), Error> {
     Ok(())
 }
 
+/// Parse a `--sprint` value into a sprint target (decision 15): `sprint:N`
+/// or an addressable stable id. A sequence reference into any other
+/// collection cannot name a sprint and is refused.
+fn parse_sprint_selector(raw: &str) -> Result<(ArtifactTarget, String), Error> {
+    let target: ArtifactTarget =
+        raw.parse()
+            .map_err(|reason: String| Error::InvalidInvocation {
+                message: format!("invalid `--sprint {raw}`: {reason}"),
+            })?;
+    if let ArtifactTarget::Reference(reference) = &target
+        && reference.collection != Collection::Sprint
+    {
+        return Err(Error::InvalidInvocation {
+            message: format!(
+                "`--sprint {raw}` names a {} reference; the owning sprint is \
+                 selected as `sprint:N` or by a sprint's stable id",
+                reference.collection
+            ),
+        });
+    }
+    Ok((target, raw.to_string()))
+}
+
 /// Resolve the current working directory.
 fn cwd() -> Result<PathBuf, Error> {
     std::env::current_dir().map_err(|source| Error::Filesystem {
@@ -289,13 +313,36 @@ fn cwd() -> Result<PathBuf, Error> {
 /// degraded creation stays exit 0 — the write happened — with the stable
 /// `warning[degraded-repository]:` line on stderr, leaving stdout (human
 /// line or JSON object) unpolluted.
-fn new_artifact(collection: Collection, title: &str, json: bool) -> Result<(), Error> {
+fn new_artifact(
+    collection: Collection,
+    title: &str,
+    sprint: Option<&str>,
+    json: bool,
+) -> Result<(), Error> {
+    // `--sprint` chooses a task's owning sprint (decision 15) and belongs
+    // to no other kind's creation vocabulary.
+    if sprint.is_some() && collection != Collection::Task {
+        return Err(Error::InvalidInvocation {
+            message: format!(
+                "`--sprint` chooses the owning sprint for `strata new task`; \
+                 it does not apply to `strata new {}`",
+                collection.name()
+            ),
+        });
+    }
+    let selection = sprint.map(parse_sprint_selector).transpose()?;
     let root = repo::discover(&cwd()?)?;
     let created = match collection {
         Collection::Dragon => artifact::create_dragon(&root, title)?,
         Collection::Idea => artifact::create_idea(&root, title)?,
         Collection::Sprint => artifact::create_sprint(&root, title)?,
-        Collection::Task => artifact::create_task(&root, title)?,
+        Collection::Task => artifact::create_task(
+            &root,
+            title,
+            selection
+                .as_ref()
+                .map(|(target, display)| (selector(target), display.as_str())),
+        )?,
     };
     let reachability = match collection {
         Collection::Dragon => artifact::probe_reachability(&root, &read::DRAGON, &created),
@@ -326,8 +373,9 @@ fn new_artifact(collection: Collection, title: &str, json: bool) -> Result<(), E
 
 /// List a collection's artifacts and render the requested projection.
 ///
-/// `--active` narrows tasks to the active sprint's; it is meaningless for
-/// other collections and refused rather than ignored.
+/// `--active` narrows tasks to the union of every active sprint's tasks
+/// (decision 15); it is meaningless for other collections and refused
+/// rather than ignored.
 fn list(collection: Collection, json: bool, active: bool) -> Result<(), Error> {
     let root = repo::discover(&cwd()?)?;
     let mut artifacts = scan(&root, collection)?;
@@ -335,18 +383,26 @@ fn list(collection: Collection, json: bool, active: bool) -> Result<(), Error> {
         if collection != Collection::Task {
             return Err(Error::InvalidInvocation {
                 message: format!(
-                    "`--active` filters tasks by the active sprint; it does \
+                    "`--active` filters tasks by the active sprints; it does \
                      not apply to `strata list {}s`",
                     collection.name()
                 ),
             });
         }
         let sprints = read::scan_sprints(&root)?;
-        let active_id = sprints
+        let active_ids: Vec<&str> = sprints
             .iter()
-            .find(|sprint| sprint.summary.status == Status::Active)
-            .map(|sprint| sprint.summary.id.clone());
-        artifacts.retain(|task| task.summary.sprint == active_id);
+            .filter(|sprint| sprint.summary.status == Status::Active)
+            .map(|sprint| sprint.summary.id.as_str())
+            .collect();
+        // The union across every active sprint, in the scan's global
+        // deterministic task order; closed sprints' tasks drop out.
+        artifacts.retain(|task| {
+            task.summary
+                .sprint
+                .as_deref()
+                .is_some_and(|owner| active_ids.contains(&owner))
+        });
     }
     if json {
         let summaries: Vec<_> = artifacts.iter().map(|a| &a.summary).collect();

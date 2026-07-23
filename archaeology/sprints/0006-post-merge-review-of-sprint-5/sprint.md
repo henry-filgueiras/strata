@@ -60,3 +60,19 @@ ideas 11 and 19, not a settled schema.
 - Treating reviewer allegations as accepted project truth: every
   claim starts as an allegation and earns its disposition through
   independent verification.
+
+## Amendment: the hold does not rest on sprint cardinality (2026-07-22)
+
+The Rationale above describes this sprint's opening state: when it
+was written, the single-active-sprint invariant existed and made this
+sprint an accidental mechanical interlock.
+[[dec-concurrent-active-sprints|Decision 15]] (task 28) has since
+superseded the singleton assumption — concurrent active sprints are
+legal, and active-sprint cardinality is not repository validity.
+
+The incident hold therefore does not, and never properly did, rest on
+sprint cardinality: it remains authoritative through umbrella comment
+thread 3's explicit closure protocol, which stays open and blocking
+until its own criteria are met. Sprint 6 remains active. The
+orthogonal review-hold primitive the original rationale gestured at is
+parked as [[ide_01KY64ZPXVR0XRZBHKERBXXJ0C|idea 20]].
