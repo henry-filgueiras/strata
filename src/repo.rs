@@ -20,6 +20,20 @@ pub const CONFIG_TEMPLATE: &str = "version = 1\n";
 /// The config schema version this build supports.
 pub const SUPPORTED_VERSION: i64 = 1;
 
+/// Root-relative path of the Git-attributes policy `strata init`
+/// materializes. It lives inside `archaeology/` (decision 14 as
+/// amended): the policy governs archaeology Markdown without annexing
+/// the host repository's root Markdown, and a root `.gitattributes`
+/// belongs to the host repository — init never creates, inspects,
+/// merges, rejects, replaces, or deletes one.
+pub const GITATTRIBUTES_FILE: &str = "archaeology/.gitattributes";
+
+/// The line-ending policy written by `strata init` (decision 14 as
+/// amended): LF-only for Markdown beneath `archaeology/`, enforced by
+/// Git at checkout where Git is present. The artifact parser enforces
+/// the same format without Git.
+pub const GITATTRIBUTES_TEMPLATE: &str = "*.md text eol=lf\n";
+
 /// Root-relative directory holding every dragon artifact, regardless of
 /// lifecycle state (decision 11: placement is flat).
 pub const DRAGONS_DIR: &str = "archaeology/dragons";
@@ -66,6 +80,16 @@ impl InitReport {
 /// - Required directories are created when missing and accepted when
 ///   present; any non-directory object occupying a required path component
 ///   is a conflict.
+/// - A missing `archaeology/.gitattributes` gains the decision 14
+///   line-ending policy, written with the same atomic no-clobber
+///   discipline as the config. An existing regular file there is
+///   preserved byte-for-byte and never parsed: Strata cannot safely
+///   infer or merge arbitrary Git-attribute policies, so the parser's
+///   LF diagnosis remains the backstop. A non-regular object at that
+///   managed path is a conflict. A root `.gitattributes` is outside the
+///   init surface entirely — never created, inspected, or touched, even
+///   when its contents disagree with Strata's policy. No Git executable
+///   or `.git` directory is required.
 /// - The config is written last, via an exclusive temporary file and an
 ///   atomic no-clobber persist: after a failed run `.strata.toml` either
 ///   does not exist or is complete — never partial or truncated.
@@ -80,11 +104,7 @@ pub fn init(root: &Path) -> Result<InitReport, Error> {
     let config_path = root.join(CONFIG_FILE);
     let config_missing = match fs::symlink_metadata(&config_path) {
         Ok(meta) if meta.is_file() => {
-            let content = fs::read_to_string(&config_path).map_err(|source| Error::Filesystem {
-                operation: "read".into(),
-                path: config_path.clone(),
-                source,
-            })?;
+            let content = read_config(&config_path)?;
             validate_config(&content).map_err(|reason| Error::MalformedArtifact {
                 path: config_path.clone(),
                 reason,
@@ -110,12 +130,50 @@ pub fn init(root: &Path) -> Result<InitReport, Error> {
         }
     };
 
+    let attributes_path = root.join(GITATTRIBUTES_FILE);
+    let attributes_missing = match fs::symlink_metadata(&attributes_path) {
+        // An existing policy is preserved byte-for-byte, never parsed or
+        // merged.
+        Ok(meta) if meta.is_file() => false,
+        Ok(meta) => {
+            return Err(Error::ArtifactConflict {
+                path: attributes_path,
+                reason: format!(
+                    "a {} occupies the `{GITATTRIBUTES_FILE}` policy path, \
+                     which must be a regular file",
+                    file_kind(&meta)
+                ),
+            });
+        }
+        // NotADirectory means a parent component is not a directory; the
+        // nested path itself is then simply absent here, and the required
+        // directory walk below reports the real conflict at the component.
+        Err(err)
+            if err.kind() == io::ErrorKind::NotFound
+                || err.kind() == io::ErrorKind::NotADirectory =>
+        {
+            true
+        }
+        Err(source) => {
+            return Err(Error::Filesystem {
+                operation: "inspect".into(),
+                path: attributes_path,
+                source,
+            });
+        }
+    };
+
     for dir in REQUIRED_DIRS {
         ensure_dir(root, dir, &mut report.created)?;
     }
 
+    if attributes_missing {
+        write_template(root, &attributes_path, GITATTRIBUTES_TEMPLATE)?;
+        report.created.push(PathBuf::from(GITATTRIBUTES_FILE));
+    }
+
     if config_missing {
-        write_config(root, &config_path)?;
+        write_template(root, &config_path, CONFIG_TEMPLATE)?;
         report.created.push(PathBuf::from(CONFIG_FILE));
     }
 
@@ -141,12 +199,7 @@ pub fn discover(start: &Path) -> Result<PathBuf, Error> {
         let config_path = dir.join(CONFIG_FILE);
         match fs::symlink_metadata(&config_path) {
             Ok(meta) if meta.is_file() => {
-                let content =
-                    fs::read_to_string(&config_path).map_err(|source| Error::Filesystem {
-                        operation: "read".into(),
-                        path: config_path.clone(),
-                        source,
-                    })?;
+                let content = read_config(&config_path)?;
                 validate_config(&content).map_err(|reason| Error::MalformedArtifact {
                     path: config_path,
                     reason,
@@ -179,6 +232,12 @@ pub fn discover(start: &Path) -> Result<PathBuf, Error> {
 }
 
 /// Validate the contents of a `.strata.toml` config.
+///
+/// The config is ordinary TOML configuration, not a splice-mutated
+/// artifact, so it sits outside decision 14's LF-only artifact-byte
+/// contract (as amended): any line endings the TOML parser accepts —
+/// including CRLF — are valid, and Strata never normalizes or rewrites
+/// the file.
 ///
 /// Accepts any TOML table whose `version` equals the supported integer.
 /// Unknown keys are tolerated: keys added later within the same schema
@@ -244,35 +303,35 @@ pub(crate) fn ensure_dir(root: &Path, rel: &str, created: &mut Vec<PathBuf>) -> 
     Ok(())
 }
 
-/// Write the config atomically: an exclusive temporary file in `root`,
-/// persisted with a no-clobber rename. A failure at any point leaves no
-/// `.strata.toml` behind; a config that appears concurrently is never
-/// replaced.
-fn write_config(root: &Path, config_path: &Path) -> Result<(), Error> {
+/// Write one init template atomically: an exclusive temporary file in
+/// `root`, persisted with a no-clobber rename. A failure at any point
+/// leaves nothing behind at `path`; a file that appears concurrently is
+/// never replaced.
+fn write_template(root: &Path, path: &Path, template: &str) -> Result<(), Error> {
     let mut tmp = tempfile::Builder::new()
-        .prefix(".strata.toml.tmp")
+        .prefix(".strata.init.tmp")
         .tempfile_in(root)
         .map_err(|source| Error::Filesystem {
-            operation: "create temporary config".into(),
+            operation: "create temporary file".into(),
             path: root.to_path_buf(),
             source,
         })?;
-    tmp.write_all(CONFIG_TEMPLATE.as_bytes())
+    tmp.write_all(template.as_bytes())
         .map_err(|source| Error::Filesystem {
-            operation: "write temporary config".into(),
+            operation: "write temporary file".into(),
             path: tmp.path().to_path_buf(),
             source,
         })?;
-    tmp.persist_noclobber(config_path).map_err(|err| {
+    tmp.persist_noclobber(path).map_err(|err| {
         if err.error.kind() == io::ErrorKind::AlreadyExists {
             Error::ArtifactConflict {
-                path: config_path.to_path_buf(),
-                reason: "a config file appeared while initializing".into(),
+                path: path.to_path_buf(),
+                reason: "a file appeared at this path while initializing".into(),
             }
         } else {
             Error::Filesystem {
-                operation: "persist config".into(),
-                path: config_path.to_path_buf(),
+                operation: "persist".into(),
+                path: path.to_path_buf(),
                 source: err.error,
             }
         }
@@ -280,7 +339,31 @@ fn write_config(root: &Path, config_path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-fn file_kind(meta: &fs::Metadata) -> &'static str {
+/// Read the config marker through the bounded seam: the marker is
+/// repository-controlled content like any artifact, so the task 22
+/// per-file cap applies to it too. Callers have already classified the
+/// path as a regular file with `symlink_metadata`.
+fn read_config(path: &Path) -> Result<String, Error> {
+    let bytes = crate::read::read_capped(path)
+        .map_err(|source| Error::Filesystem {
+            operation: "read".into(),
+            path: path.to_path_buf(),
+            source,
+        })?
+        .ok_or_else(|| Error::MalformedArtifact {
+            path: path.to_path_buf(),
+            reason: format!(
+                "file exceeds the {}-byte per-file read limit",
+                crate::read::MAX_ARTIFACT_BYTES
+            ),
+        })?;
+    String::from_utf8(bytes).map_err(|_| Error::MalformedArtifact {
+        path: path.to_path_buf(),
+        reason: "contents are not valid UTF-8".into(),
+    })
+}
+
+pub(crate) fn file_kind(meta: &fs::Metadata) -> &'static str {
     let file_type = meta.file_type();
     if file_type.is_dir() {
         "directory"
@@ -349,6 +432,106 @@ mod tests {
 
         assert_eq!(fs::read_to_string(root.join(CONFIG_FILE)).unwrap(), custom);
         assert!(!report.created.contains(&PathBuf::from(CONFIG_FILE)));
+    }
+
+    #[test]
+    fn init_materializes_the_nested_line_ending_policy_only() {
+        let tmp = temp_root();
+        let root = tmp.path();
+
+        let report = init(root).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(root.join(GITATTRIBUTES_FILE)).unwrap(),
+            GITATTRIBUTES_TEMPLATE
+        );
+        assert!(report.created.contains(&PathBuf::from(GITATTRIBUTES_FILE)));
+        assert!(
+            !root.join(".gitattributes").exists(),
+            "a root .gitattributes belongs to the host repository and is \
+             never created"
+        );
+    }
+
+    #[test]
+    fn existing_gitattributes_is_preserved_byte_for_byte_and_never_parsed() {
+        let tmp = temp_root();
+        let root = tmp.path();
+        // Not even valid attribute syntax: preservation must not depend on
+        // Strata understanding the policy.
+        let custom = "* text=auto\n<<not attribute syntax>>\n";
+        fs::create_dir_all(root.join("archaeology")).unwrap();
+        fs::write(root.join(GITATTRIBUTES_FILE), custom).unwrap();
+
+        let report = init(root).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(root.join(GITATTRIBUTES_FILE)).unwrap(),
+            custom
+        );
+        assert!(!report.created.contains(&PathBuf::from(GITATTRIBUTES_FILE)));
+    }
+
+    #[test]
+    fn root_gitattributes_is_ignored_and_untouched_even_when_it_disagrees() {
+        let tmp = temp_root();
+        let root = tmp.path();
+        // A host policy that contradicts Strata's: still not init's to
+        // inspect, merge, reject, replace, or delete.
+        let host_policy = "*.md text eol=crlf\n";
+        fs::write(root.join(".gitattributes"), host_policy).unwrap();
+
+        let report = init(root).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(root.join(".gitattributes")).unwrap(),
+            host_policy,
+            "the host repository's root policy must survive byte-identical"
+        );
+        assert!(
+            !report.created.contains(&PathBuf::from(".gitattributes")),
+            "the root path is outside the init surface"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join(GITATTRIBUTES_FILE)).unwrap(),
+            GITATTRIBUTES_TEMPLATE,
+            "the nested policy is still materialized"
+        );
+    }
+
+    #[test]
+    fn gitattributes_path_occupied_by_directory_is_a_conflict() {
+        let tmp = temp_root();
+        let root = tmp.path();
+        fs::create_dir_all(root.join(GITATTRIBUTES_FILE)).unwrap();
+
+        let err = init(root).unwrap_err();
+
+        assert!(matches!(err, Error::ArtifactConflict { .. }), "{err:?}");
+        assert!(
+            root.join(GITATTRIBUTES_FILE).is_dir(),
+            "conflicting object must survive"
+        );
+        assert!(
+            !root.join(CONFIG_FILE).exists(),
+            "config must not be written when initialization fails"
+        );
+    }
+
+    #[test]
+    fn initialized_repository_missing_gitattributes_gains_it_on_rerun() {
+        let tmp = temp_root();
+        let root = tmp.path();
+        init(root).unwrap();
+        fs::remove_file(root.join(GITATTRIBUTES_FILE)).unwrap();
+
+        let report = init(root).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(root.join(GITATTRIBUTES_FILE)).unwrap(),
+            GITATTRIBUTES_TEMPLATE
+        );
+        assert_eq!(report.created, vec![PathBuf::from(GITATTRIBUTES_FILE)]);
     }
 
     #[test]
@@ -540,6 +723,31 @@ mod tests {
     fn validate_config_accepts_supported_version_with_unknown_keys() {
         assert_eq!(validate_config("version = 1"), Ok(()));
         assert_eq!(validate_config("version = 1\nextra = \"ok\"\n"), Ok(()));
+    }
+
+    #[test]
+    fn validate_config_accepts_crlf_line_endings() {
+        // The config is ordinary TOML outside the artifact-byte contract
+        // (decision 14 as amended): whatever the TOML parser accepts is
+        // valid.
+        assert_eq!(validate_config("version = 1\r\n"), Ok(()));
+        assert_eq!(
+            validate_config("# annotated\r\nversion = 1\r\nextra = \"ok\"\r\n"),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn init_preserves_an_existing_valid_crlf_config_byte_for_byte() {
+        let tmp = temp_root();
+        let root = tmp.path();
+        let crlf = "# hand-written\r\nversion = 1\r\n";
+        fs::write(root.join(CONFIG_FILE), crlf).unwrap();
+
+        let report = init(root).unwrap();
+
+        assert_eq!(fs::read_to_string(root.join(CONFIG_FILE)).unwrap(), crlf);
+        assert!(!report.created.contains(&PathBuf::from(CONFIG_FILE)));
     }
 
     #[test]

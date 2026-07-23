@@ -1,6 +1,6 @@
 //! Integration tests for the `sprint` collection through the compiled
-//! binary: creation, listing, show, closure with its pending-task guard,
-//! and the one-active-sprint rule.
+//! binary: creation (including concurrent active sprints, decision 15),
+//! listing, show, and closure with its pending-task guard.
 
 use std::fs;
 use std::path::Path;
@@ -121,7 +121,10 @@ fn list_sprints_json_carries_the_summary_fields() {
 }
 
 #[test]
-fn a_second_active_sprint_is_refused_naming_the_first() {
+fn concurrent_active_sprints_are_created_normally_and_doctor_green() {
+    // Decision 15 supersedes the former
+    // `a_second_active_sprint_is_refused_naming_the_first` regression:
+    // active-sprint cardinality is not repository validity.
     let tmp = init_repo();
     assert!(
         strata_in(tmp.path(), &["new", "sprint", "First"])
@@ -131,13 +134,24 @@ fn a_second_active_sprint_is_refused_naming_the_first() {
 
     let out = strata_in(tmp.path(), &["new", "sprint", "Second"]);
 
-    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
-    let err = stderr(&out);
-    assert!(err.starts_with("error[invalid-invocation]:"), "{err}");
-    assert!(err.contains("sprint:1"), "{err}");
+    assert!(out.status.success(), "{}", stderr(&out));
     assert!(
-        !tmp.path().join(SPRINTS_DIR).join("0002-second").exists(),
-        "nothing may be created"
+        stdout(&out).contains("created sprint:2"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(
+        tmp.path()
+            .join(SPRINTS_DIR)
+            .join("0002-second/sprint.md")
+            .is_file()
+    );
+
+    let doctor = strata_in(tmp.path(), &["doctor"]);
+    assert!(
+        doctor.status.success(),
+        "concurrent active sprints are doctor-green:\n{}",
+        stdout(&doctor)
     );
 }
 

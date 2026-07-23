@@ -25,10 +25,19 @@ pub enum Command {
     /// Create an artifact; Strata assigns its sequence, slug, and identity
     New {
         /// Collection for the new artifact (`dragon`, `idea`, `sprint`, or
-        /// `task`; tasks are created in the active sprint)
+        /// `task`; tasks are created in an active sprint, chosen with
+        /// `--sprint` when several are active)
         collection: Collection,
         /// Human-readable title for the artifact
         title: String,
+        /// Tasks only: the owning sprint, as `sprint:N` or a sprint's
+        /// stable id; required when more than one sprint is active
+        #[arg(long)]
+        sprint: Option<String>,
+        /// Emit a deterministic JSON object describing the created
+        /// artifact instead of the human-readable line
+        #[arg(long)]
+        json: bool,
     },
     /// List the artifacts in a collection
     List {
@@ -37,7 +46,7 @@ pub enum Command {
         /// Emit a deterministic JSON array instead of human-readable lines
         #[arg(long)]
         json: bool,
-        /// Tasks only: list only the active sprint's tasks
+        /// Tasks only: list only the tasks owned by active sprints
         #[arg(long)]
         active: bool,
     },
@@ -188,8 +197,12 @@ impl fmt::Display for ArtifactRef {
 ///
 /// A reference containing `:` is a human [`ArtifactRef`] and must parse as
 /// one; anything else is a stable opaque identity, passed through verbatim.
-/// IDs are opaque strings — nothing here may assume ULID structure — so the
-/// only invalid bare reference is an empty one.
+/// IDs are opaque strings — nothing here may assume ULID structure — but a
+/// stable-id *address* must satisfy the decision 12 addressability
+/// contract: non-empty and free of `:`, whitespace, `#`, `|`, and `]`.
+/// Ids outside that subset remain valid identities; they are refused here,
+/// naming the offending character class, because no command surface can
+/// reach them by id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArtifactTarget {
     Reference(ArtifactRef),
@@ -207,6 +220,14 @@ impl FromStr for ArtifactTarget {
             return Err("empty artifact reference; expected `collection:sequence` \
                  (e.g. `dragon:7`) or a stable artifact `id`"
                 .into());
+        }
+        if let Err(violation) = crate::edges::addressable(s) {
+            return Err(format!(
+                "artifact id `{s}` {}, so it is not addressable as a \
+                 stable-id reference; repair the artifact's `id` by hand or \
+                 refer to the artifact by `collection:sequence`",
+                violation.describe()
+            ));
         }
         Ok(ArtifactTarget::Id(s.to_string()))
     }
@@ -306,6 +327,25 @@ mod tests {
         assert!(err.contains("widget"), "{err}");
         let err = "".parse::<ArtifactTarget>().unwrap_err();
         assert!(err.contains("empty artifact reference"), "{err}");
+    }
+
+    #[test]
+    fn unaddressable_bare_ids_are_refused_naming_the_class() {
+        // Decision 12: a `:`-bearing id is captured by the `kind:N`
+        // grammar (so it can never reach the id arm), and the other
+        // excluded classes are refused explicitly.
+        let err = "drg:odd".parse::<ArtifactTarget>().unwrap_err();
+        assert!(err.contains("unknown collection `drg`"), "{err}");
+        for (id, needle) in [
+            ("dec spacey", "whitespace"),
+            ("dec#frag", "`#`"),
+            ("dec|pipe", "`|`"),
+            ("dec]close", "`]`"),
+        ] {
+            let err = id.parse::<ArtifactTarget>().unwrap_err();
+            assert!(err.contains(needle), "for {id:?}: {err}");
+            assert!(err.contains("not addressable"), "for {id:?}: {err}");
+        }
     }
 
     #[test]

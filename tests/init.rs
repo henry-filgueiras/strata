@@ -9,6 +9,8 @@ use std::path::Path;
 use std::process::Output;
 
 const CONFIG_FILE: &str = ".strata.toml";
+const GITATTRIBUTES_FILE: &str = "archaeology/.gitattributes";
+const GITATTRIBUTES_POLICY: &str = "*.md text eol=lf\n";
 const REQUIRED_DIRS: [&str; 2] = ["archaeology/dragons", "archaeology/dragons"];
 
 fn strata_in(dir: &Path, args: &[&str]) -> Output {
@@ -45,7 +47,93 @@ fn init_creates_expected_layout_in_empty_non_git_directory() {
     for dir in REQUIRED_DIRS {
         assert!(tmp.path().join(dir).is_dir(), "missing {dir}");
     }
-    assert!(stdout(&out).contains("initialized"), "{}", stdout(&out));
+    assert_eq!(
+        fs::read_to_string(tmp.path().join(GITATTRIBUTES_FILE)).unwrap(),
+        GITATTRIBUTES_POLICY,
+        "init must materialize the nested decision 14 policy without \
+         requiring Git"
+    );
+    assert!(
+        !tmp.path().join(".gitattributes").exists(),
+        "fresh init must not create a root .gitattributes"
+    );
+    let text = stdout(&out);
+    assert!(text.contains("initialized"), "{text}");
+    assert!(text.contains(GITATTRIBUTES_FILE), "{text}");
+}
+
+#[test]
+fn shipped_policy_exists_only_at_the_nested_archaeology_path() {
+    // This repository ships the same policy `strata init` writes, only
+    // inside archaeology/ (decision 14 as amended); the task 26 root
+    // file is gone.
+    let nested = concat!(env!("CARGO_MANIFEST_DIR"), "/archaeology/.gitattributes");
+    assert_eq!(fs::read_to_string(nested).unwrap(), GITATTRIBUTES_POLICY);
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/.gitattributes");
+    assert!(
+        !std::path::Path::new(root).exists(),
+        "root .gitattributes belongs to the host repository"
+    );
+}
+
+#[test]
+fn init_rerun_leaves_the_line_ending_policy_untouched() {
+    let tmp = tempfile::tempdir().unwrap();
+    assert!(strata_in(tmp.path(), &["init"]).status.success());
+
+    let out = strata_in(tmp.path(), &["init"]);
+
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("already initialized"),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(
+        fs::read_to_string(tmp.path().join(GITATTRIBUTES_FILE)).unwrap(),
+        GITATTRIBUTES_POLICY
+    );
+}
+
+#[test]
+fn existing_gitattributes_is_preserved_byte_for_byte() {
+    let tmp = tempfile::tempdir().unwrap();
+    let custom = "# hand-rolled policy\n*.md -text\n";
+    fs::create_dir_all(tmp.path().join("archaeology")).unwrap();
+    fs::write(tmp.path().join(GITATTRIBUTES_FILE), custom).unwrap();
+
+    let out = strata_in(tmp.path(), &["init"]);
+
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        fs::read_to_string(tmp.path().join(GITATTRIBUTES_FILE)).unwrap(),
+        custom,
+        "an existing policy is preserved, never parsed, merged, or replaced"
+    );
+    assert!(
+        !stdout(&out).contains(GITATTRIBUTES_FILE),
+        "a preserved policy is not a created path:\n{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn gitattributes_path_occupied_by_directory_is_an_artifact_conflict() {
+    let tmp = tempfile::tempdir().unwrap();
+    fs::create_dir_all(tmp.path().join(GITATTRIBUTES_FILE)).unwrap();
+
+    let out = strata_in(tmp.path(), &["init"]);
+
+    assert_eq!(out.status.code(), Some(4), "{}", stderr(&out));
+    assert!(
+        stderr(&out).starts_with("error[artifact-conflict]: "),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        tmp.path().join(GITATTRIBUTES_FILE).is_dir(),
+        "conflicting object must survive untouched"
+    );
 }
 
 #[test]

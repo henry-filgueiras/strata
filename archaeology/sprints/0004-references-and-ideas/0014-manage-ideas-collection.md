@@ -113,3 +113,15 @@ Dogfooded live: `doctor` green over 20 artifacts (4 dragons, 16
 hand-seeded ideas — including idea 6's extra `adopted:` key, tolerated
 as unknown metadata), `list ideas` renders all sixteen, `show idea:6`
 returns the adopted specimen byte-for-byte.
+
+## Erratum (2026-07-22)
+
+The Verification's "191 tests" was false at this task's implementation
+commit `e18c8e8`: the actual complete suite was 187, under the
+established sum-of-harnesses convention (the sum of every `cargo test`
+harness result, matching the `#[test]` inventory). Task 16's "203" at
+`3e06504` was verified exact under the same convention and serves as
+the convention control, so this was a transcription/reporting error,
+not a counting-convention mismatch. The original text above remains
+for historical visibility. Adjudicated by comment thread 9; repaired
+by task 30.

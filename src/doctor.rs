@@ -5,7 +5,9 @@
 //! trust artifacts; `doctor`'s job is diagnosis, so it walks the same
 //! per-file pipeline as [`crate::read`], converts each failure into a
 //! [`Finding`], and adds repository-wide checks no single-file parse can
-//! see: duplicate stable identities and duplicate display sequences.
+//! see: duplicate stable identities — checked over the complete identity
+//! claimant catalog (task 23), so unmanaged and malformed-but-admitted
+//! claimants surface too — and duplicate display sequences.
 //!
 //! Validation never mutates canonical files. Per decision 5, states Git
 //! inevitably produces are healthy: a missing managed directory is an empty
@@ -49,8 +51,10 @@ pub enum Severity {
 pub struct Finding {
     /// Provisional kebab-case problem code: `malformed-artifact`,
     /// `unreadable-artifact`, `artifact-conflict`, `duplicate-id`,
-    /// `duplicate-sequence`, or a typed-edge code (`invalid-edge`,
-    /// `dangling-edge`, `unbound-edge`, `stale-edge`).
+    /// `duplicate-sequence`, `non-canonical-artifact` (a parseable file
+    /// whose representation the decision 12 contract excludes), or a
+    /// typed-edge code (`invalid-edge`, `dangling-edge`, `ambiguous-edge`,
+    /// `unbound-edge`, `stale-edge`).
     pub problem: &'static str,
     /// Repository-relative path of the affected file or directory.
     pub path: String,
@@ -101,7 +105,9 @@ pub fn check(root: &Path) -> Result<Report, Error> {
     scan_task_dirs(root, &mut findings, &mut artifacts)?;
 
     let artifacts_checked = artifacts.len();
-    findings.extend(duplicate_findings(&artifacts));
+    let catalog = crate::edges::Catalog::build(root);
+    findings.extend(duplicate_findings(&artifacts, &catalog));
+    findings.extend(representation_findings(&artifacts, &catalog));
 
     // A task's `sprint:` field must name an existing sprint whose
     // containment directory holds the file (decision 11).
@@ -117,7 +123,14 @@ pub fn check(root: &Path) -> Result<Report, Error> {
         let Some(sprint_id) = task.summary.sprint.as_deref() else {
             continue;
         };
-        let Some(owner) = sprints.iter().find(|sprint| sprint.summary.id == sprint_id) else {
+        // Every sprint claiming the id, not the first: a duplicated sprint
+        // id is its own catalog finding, and containment must not be
+        // judged against an arbitrary claimant (task 23).
+        let owners: Vec<&&Artifact> = sprints
+            .iter()
+            .filter(|sprint| sprint.summary.id == sprint_id)
+            .collect();
+        if owners.is_empty() {
             task_findings.push(Finding {
                 problem: "misfiled-task",
                 path: task.summary.path.clone(),
@@ -128,58 +141,59 @@ pub fn check(root: &Path) -> Result<Report, Error> {
                 severity: Severity::Error,
             });
             continue;
-        };
-        let owner_dir = owner
-            .summary
-            .path
-            .rsplit_once('/')
-            .map(|(dir, _)| dir)
-            .unwrap_or_default();
-        if task.summary.path.rsplit_once('/').map(|(dir, _)| dir) != Some(owner_dir) {
+        }
+        let task_dir = task.summary.path.rsplit_once('/').map(|(dir, _)| dir);
+        let owner_dirs: Vec<&str> = owners
+            .iter()
+            .map(|owner| {
+                owner
+                    .summary
+                    .path
+                    .rsplit_once('/')
+                    .map(|(dir, _)| dir)
+                    .unwrap_or_default()
+            })
+            .collect();
+        if !owner_dirs.iter().any(|dir| task_dir == Some(dir)) {
+            let detail = match owners.as_slice() {
+                [owner] => format!(
+                    "the `sprint:` field names `{sprint_id}` ({}), but the \
+                     file sits outside that sprint's containment directory \
+                     `{}`",
+                    owner.summary.reference(),
+                    owner_dirs[0]
+                ),
+                _ => format!(
+                    "the `sprint:` field names `{sprint_id}`, which {} \
+                     sprints claim, and the file sits in none of their \
+                     containment directories: {}",
+                    owners.len(),
+                    owner_dirs.join(", ")
+                ),
+            };
             task_findings.push(Finding {
                 problem: "misfiled-task",
                 path: task.summary.path.clone(),
-                detail: format!(
-                    "the `sprint:` field names `{sprint_id}` ({}), but the \
-                     file sits outside that sprint's containment directory \
-                     `{owner_dir}`",
-                    owner.summary.reference()
-                ),
+                detail,
                 severity: Severity::Error,
             });
         }
     }
     findings.extend(task_findings);
 
-    // At most one sprint may be active (the `new sprint` refusal, verified
-    // here because a branch merge can produce the state no command allows).
-    let active: Vec<&str> = artifacts
-        .iter()
-        .filter(|artifact| {
-            artifact.summary.kind == "sprint" && artifact.summary.status == read::Status::Active
-        })
-        .map(|artifact| artifact.summary.path.as_str())
-        .collect();
-    if active.len() > 1 {
-        findings.push(Finding {
-            problem: "multiple-active-sprints",
-            path: active[0].into(),
-            detail: format!(
-                "at most one sprint may be active, but {} are: {}",
-                active.len(),
-                active.join(", ")
-            ),
-            severity: Severity::Error,
-        });
-    }
+    // Active-sprint cardinality is not repository validity (decision 15):
+    // concurrent active sprints are legal, and the former
+    // `multiple-active-sprints` error is retired with no successor at any
+    // tier.
 
     // Typed edges (decision 10): validated over the cleanly parsed
-    // artifacts against every front-matter id in the archaeology tree, so
-    // provenance targets in not-yet-managed collections still resolve.
-    let universe = crate::edges::harvest_ids(root);
+    // artifacts against the identity claimant catalog, so provenance
+    // targets in not-yet-managed collections still resolve, and an edge
+    // bound to a multiply claimed id is never validated against an
+    // arbitrary claimant (task 23).
     for artifact in &artifacts {
         for edge_issue in
-            crate::edges::check_artifact(&artifact.summary, &artifact.content, &universe)
+            crate::edges::check_artifact(&artifact.summary, &artifact.content, &catalog)
         {
             findings.push(Finding {
                 problem: edge_issue.problem,
@@ -207,29 +221,9 @@ fn scan_dir(
 ) -> Result<(), Error> {
     let dir_rel = collection.dir;
     let dir = root.join(dir_rel);
-    let entries = match fs::read_dir(&dir) {
-        Ok(entries) => entries,
-        // A missing managed directory is an empty collection (decision 5):
-        // Git does not round-trip empty directories.
-        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(source) if source.kind() == io::ErrorKind::NotADirectory => {
-            findings.push(Finding {
-                problem: "artifact-conflict",
-                path: dir_rel.into(),
-                detail: "a non-directory object occupies this managed directory path; \
-                         move it aside"
-                    .into(),
-                severity: Severity::Error,
-            });
-            return Ok(());
-        }
-        Err(source) => {
-            return Err(Error::Filesystem {
-                operation: "read directory".into(),
-                path: dir,
-                source,
-            });
-        }
+    let entries = match managed_dir_entries(&dir, dir_rel, findings)? {
+        Some(entries) => entries,
+        None => return Ok(()),
     };
 
     for entry in entries {
@@ -251,8 +245,20 @@ fn scan_dir(
         if name_str.starts_with('.') {
             continue;
         }
+        let file_type = entry.file_type().map_err(|source| Error::Filesystem {
+            operation: "inspect directory entry".into(),
+            path: dir.join(name_str),
+            source,
+        })?;
         let path = dir.join(name_str);
-        if path.is_dir() {
+        if file_type.is_symlink() || !(file_type.is_file() || file_type.is_dir()) {
+            findings.push(non_regular_finding(
+                format!("{dir_rel}/{name_str}"),
+                &file_type,
+            ));
+            continue;
+        }
+        if file_type.is_dir() {
             findings.push(Finding {
                 problem: "artifact-conflict",
                 path: format!("{dir_rel}/{name_str}"),
@@ -272,6 +278,69 @@ fn scan_dir(
     Ok(())
 }
 
+/// Open one managed directory for a diagnosis walk, classifying the
+/// directory itself without following symlinks. `None` means the walk has
+/// nothing to do: the directory is missing (an empty collection, decision
+/// 5) or its path is occupied by a non-directory object — including a
+/// symlink, never traversed — which is recorded as a conflict finding.
+fn managed_dir_entries(
+    dir: &Path,
+    dir_rel: &str,
+    findings: &mut Vec<Finding>,
+) -> Result<Option<fs::ReadDir>, Error> {
+    match fs::symlink_metadata(dir) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(meta) => {
+            findings.push(Finding {
+                problem: "artifact-conflict",
+                path: dir_rel.into(),
+                detail: format!(
+                    "a {} occupies this managed directory path; move it aside",
+                    crate::repo::file_kind(&meta)
+                ),
+                severity: Severity::Error,
+            });
+            return Ok(None);
+        }
+        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(Error::Filesystem {
+                operation: "inspect".into(),
+                path: dir.to_path_buf(),
+                source,
+            });
+        }
+    }
+    fs::read_dir(dir)
+        .map(Some)
+        .map_err(|source| Error::Filesystem {
+            operation: "read directory".into(),
+            path: dir.to_path_buf(),
+            source,
+        })
+}
+
+/// Conflict finding for a symlink or other non-regular entry at a
+/// canonical artifact position (thread 4, task 22): surfaced as
+/// corruption, never read or followed.
+fn non_regular_finding(path: String, file_type: &fs::FileType) -> Finding {
+    let what = if file_type.is_symlink() {
+        "symbolic link"
+    } else {
+        "non-regular file"
+    };
+    Finding {
+        problem: "artifact-conflict",
+        path,
+        detail: format!(
+            "a {what} occupies a managed artifact position; artifacts must \
+             be regular files, and Strata never follows symbolic links \
+             inside a repository"
+        ),
+        severity: Severity::Error,
+    }
+}
+
 /// Walk the sprints directory, collecting per-sprint findings and cleanly
 /// parsed sprint artifacts. Containment directories that fail structural
 /// expectations (a loose file, a malformed `NNNN-slug` name, a missing
@@ -284,27 +353,9 @@ fn scan_sprints_dir(
 ) -> Result<(), Error> {
     let dir_rel = crate::repo::SPRINTS_DIR;
     let dir = root.join(dir_rel);
-    let entries = match fs::read_dir(&dir) {
-        Ok(entries) => entries,
-        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(source) if source.kind() == io::ErrorKind::NotADirectory => {
-            findings.push(Finding {
-                problem: "artifact-conflict",
-                path: dir_rel.into(),
-                detail: "a non-directory object occupies this managed directory path; \
-                         move it aside"
-                    .into(),
-                severity: Severity::Error,
-            });
-            return Ok(());
-        }
-        Err(source) => {
-            return Err(Error::Filesystem {
-                operation: "read directory".into(),
-                path: dir,
-                source,
-            });
-        }
+    let entries = match managed_dir_entries(&dir, dir_rel, findings)? {
+        Some(entries) => entries,
+        None => return Ok(()),
     };
 
     for entry in entries {
@@ -326,9 +377,27 @@ fn scan_sprints_dir(
         if name_str.starts_with('.') {
             continue;
         }
+        let file_type = entry.file_type().map_err(|source| Error::Filesystem {
+            operation: "inspect directory entry".into(),
+            path: dir.join(name_str),
+            source,
+        })?;
         let sprint_dir = dir.join(name_str);
         let sprint_dir_rel = format!("{dir_rel}/{name_str}");
-        if !sprint_dir.is_dir() {
+        if file_type.is_symlink() {
+            findings.push(Finding {
+                problem: "artifact-conflict",
+                path: sprint_dir_rel,
+                detail: "a symbolic link occupies a sprint containment \
+                         position; containment directories must be real \
+                         directories, and Strata never follows symbolic \
+                         links inside a repository"
+                    .into(),
+                severity: Severity::Error,
+            });
+            continue;
+        }
+        if !file_type.is_dir() {
             findings.push(Finding {
                 problem: "malformed-artifact",
                 path: sprint_dir_rel,
@@ -352,17 +421,24 @@ fn scan_sprints_dir(
         };
         let file = sprint_dir.join(crate::repo::SPRINT_FILE);
         let file_rel = format!("{sprint_dir_rel}/{}", crate::repo::SPRINT_FILE);
-        if !file.is_file() {
-            findings.push(Finding {
-                problem: "malformed-artifact",
-                path: sprint_dir_rel,
-                detail: format!(
-                    "sprint containment directories must hold a `{}` artifact",
-                    crate::repo::SPRINT_FILE
-                ),
-                severity: Severity::Error,
-            });
-            continue;
+        match fs::symlink_metadata(&file) {
+            Ok(meta) if meta.is_file() => {}
+            Ok(meta) if meta.file_type().is_symlink() => {
+                findings.push(non_regular_finding(file_rel, &meta.file_type()));
+                continue;
+            }
+            Ok(_) | Err(_) => {
+                findings.push(Finding {
+                    problem: "malformed-artifact",
+                    path: sprint_dir_rel,
+                    detail: format!(
+                        "sprint containment directories must hold a `{}` artifact",
+                        crate::repo::SPRINT_FILE
+                    ),
+                    severity: Severity::Error,
+                });
+                continue;
+            }
         }
         match read::parse_artifact_at(
             &file,
@@ -403,8 +479,12 @@ fn scan_task_dirs(
         let Some(dir_name) = name.to_str() else {
             continue;
         };
+        // Classified from the entry itself, so a symlinked containment
+        // directory is skipped here (never followed); it is already
+        // reported as a conflict by `scan_sprints_dir`.
+        let is_real_dir = entry.file_type().is_ok_and(|file_type| file_type.is_dir());
         if dir_name.starts_with('.')
-            || !entry.path().is_dir()
+            || !is_real_dir
             || crate::artifact::parse_dir_sequence(dir_name).is_none()
         {
             continue;
@@ -434,8 +514,20 @@ fn scan_task_dirs(
             if task_name.starts_with('.') || task_name == crate::repo::SPRINT_FILE {
                 continue;
             }
+            let file_type = task_entry.file_type().map_err(|source| Error::Filesystem {
+                operation: "inspect directory entry".into(),
+                path: dir.join(task_name),
+                source,
+            })?;
             let path = dir.join(task_name);
-            if path.is_dir() {
+            if file_type.is_symlink() || !(file_type.is_file() || file_type.is_dir()) {
+                findings.push(non_regular_finding(
+                    format!("{dir_rel}/{task_name}"),
+                    &file_type,
+                ));
+                continue;
+            }
+            if file_type.is_dir() {
                 findings.push(Finding {
                     problem: "artifact-conflict",
                     path: format!("{dir_rel}/{task_name}"),
@@ -470,6 +562,14 @@ fn finding_at(error: Error, path: String) -> Finding {
             detail: reason,
             severity: Severity::Error,
         },
+        // The bounded-read seam's non-regular backstop (task 22): keep the
+        // finding vocabulary aligned with the scanners' walk-time refusal.
+        Error::ArtifactConflict { reason, .. } => Finding {
+            problem: "artifact-conflict",
+            path,
+            detail: reason,
+            severity: Severity::Error,
+        },
         Error::Filesystem {
             operation, source, ..
         } => Finding {
@@ -490,35 +590,35 @@ fn finding_at(error: Error, path: String) -> Finding {
     }
 }
 
-/// Repository-wide duplicate checks over the cleanly parsed artifacts:
-/// one finding per duplicated stable identity and per duplicated display
-/// sequence, anchored at the first involved path and naming every other.
-/// Identities are global — a stable id must be unique across collections —
-/// while display sequences are collection-scoped, so `dragon:1` and
-/// `idea:1` coexist.
-fn duplicate_findings(artifacts: &[Artifact]) -> Vec<Finding> {
-    let mut by_id: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+/// Repository-wide duplicate checks: one finding per duplicated stable
+/// identity and per duplicated display sequence, anchored at the first
+/// involved path and naming every other.
+///
+/// Identities are global and checked over the complete claimant catalog
+/// (task 23): canonical, unmanaged, and malformed-but-admitted claimants
+/// all participate, and this is the only duplicate-identity vocabulary —
+/// the former managed-only map is subsumed, never a competing finding.
+/// Display sequences remain collection-scoped over the cleanly parsed
+/// managed artifacts, so `dragon:1` and `idea:1` coexist.
+fn duplicate_findings(artifacts: &[Artifact], catalog: &crate::edges::Catalog) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    for (id, claimants) in catalog.ambiguous_ids() {
+        let described: Vec<String> = claimants.iter().map(|c| describe_claimant(c)).collect();
+        findings.push(Finding {
+            problem: "duplicate-id",
+            path: claimants[0].claim.path.clone(),
+            detail: format!("stable id `{id}` is shared by: {}", described.join(", ")),
+            severity: Severity::Error,
+        });
+    }
+
     let mut by_sequence: BTreeMap<(&str, u32), Vec<&str>> = BTreeMap::new();
     for artifact in artifacts {
         let summary = &artifact.summary;
-        by_id.entry(&summary.id).or_default().push(&summary.path);
         by_sequence
             .entry((&summary.kind, summary.sequence))
             .or_default()
             .push(&summary.path);
-    }
-
-    let mut findings = Vec::new();
-    for (id, mut paths) in by_id {
-        if paths.len() > 1 {
-            paths.sort_unstable();
-            findings.push(Finding {
-                problem: "duplicate-id",
-                path: paths[0].into(),
-                detail: format!("stable id `{id}` is shared by: {}", paths.join(", ")),
-                severity: Severity::Error,
-            });
-        }
     }
     for ((kind, sequence), mut paths) in by_sequence {
         if paths.len() > 1 {
@@ -535,6 +635,69 @@ fn duplicate_findings(artifacts: &[Artifact]) -> Vec<Finding> {
         }
     }
     findings
+}
+
+/// Representation conformance per decision 12: contract-excluded
+/// representations on otherwise parseable artifacts, distinct from
+/// `malformed-artifact` because the files parse.
+///
+/// Two checks share the `non-canonical-artifact` vocabulary:
+///
+/// - every admitted identity claimant — managed, unmanaged/probe-only,
+///   or rejected alike; disposition and addressability are separate —
+///   whose decoded id fails the addressability contract, so that
+///   doctor-green implies addressable everywhere binding might look;
+/// - every cleanly parsed managed artifact whose mutable `status`
+///   carrier is not the canonical form the transition splicer accepts
+///   (judged by the one shared recognizer), so that doctor-green implies
+///   transitionable.
+fn representation_findings(
+    artifacts: &[Artifact],
+    catalog: &crate::edges::Catalog,
+) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    for claimant in catalog.claimants() {
+        if let Err(violation) = crate::edges::addressable(&claimant.claim.id) {
+            findings.push(Finding {
+                problem: "non-canonical-artifact",
+                path: claimant.claim.path.clone(),
+                detail: format!(
+                    "stable id `{}` {}; it remains a valid identity, but it \
+                     cannot serve as a stable-id address or bound-marker \
+                     target (decision 12 addressability)",
+                    claimant.claim.id,
+                    violation.describe()
+                ),
+                severity: Severity::Error,
+            });
+        }
+    }
+    for artifact in artifacts {
+        if let Err(reason) = crate::transition::canonical_status_carrier(
+            &artifact.content,
+            artifact.summary.status.name(),
+        ) {
+            findings.push(Finding {
+                problem: "non-canonical-artifact",
+                path: artifact.summary.path.clone(),
+                detail: reason,
+                severity: Severity::Error,
+            });
+        }
+    }
+    findings
+}
+
+/// Human description of one duplicate claimant: its path, annotated with
+/// its catalog disposition when the claimant is not canonically parsed.
+fn describe_claimant(claimant: &crate::edges::Claimant) -> String {
+    match claimant.disposition {
+        crate::edges::Disposition::Canonical => claimant.claim.path.clone(),
+        crate::edges::Disposition::Unassessed => format!("{} (unmanaged)", claimant.claim.path),
+        crate::edges::Disposition::Rejected { class } => {
+            format!("{} (rejected: {class})", claimant.claim.path)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1041,25 +1204,17 @@ mod tests {
     }
 
     #[test]
-    fn multiple_active_sprints_are_an_error_naming_every_path() {
+    fn concurrent_active_sprints_are_doctor_green() {
+        // Decision 15: active-sprint cardinality is not repository
+        // validity; the former `multiple-active-sprints` error is retired.
         let tmp = temp_repo();
         seed_sprint(tmp.path(), "0001-branch-a", 1, "active");
         seed_sprint(tmp.path(), "0002-branch-b", 2, "active");
 
         let report = check(tmp.path()).unwrap();
 
-        assert_eq!(
-            problems(&report),
-            vec![(
-                "multiple-active-sprints",
-                "archaeology/sprints/0001-branch-a/sprint.md"
-            )]
-        );
-        assert!(
-            report.findings[0].detail.contains("0002-branch-b"),
-            "{}",
-            report.findings[0].detail
-        );
+        assert!(report.healthy(), "{:?}", report.findings);
+        assert_eq!(report.artifacts_checked, 2);
     }
 
     #[test]
@@ -1113,6 +1268,545 @@ mod tests {
             report.findings[0].detail.contains("0002-b"),
             "{}",
             report.findings[0].detail
+        );
+    }
+
+    #[test]
+    fn oversized_artifact_is_a_bounded_read_finding_not_an_abort() {
+        let tmp = temp_repo();
+        write_dragon(
+            tmp.path(),
+            DRAGONS_DIR,
+            "0001-fine.md",
+            &dragon_markdown("id-1", 1, "open", "Fine"),
+        );
+        let mut oversized = dragon_markdown("id-2", 2, "open", "Big");
+        oversized.push_str(&"x".repeat(crate::read::MAX_ARTIFACT_BYTES as usize));
+        write_dragon(tmp.path(), DRAGONS_DIR, "0002-big.md", &oversized);
+
+        let report = check(tmp.path()).unwrap();
+
+        assert_eq!(report.artifacts_checked, 1);
+        assert_eq!(
+            problems(&report),
+            vec![("malformed-artifact", "archaeology/dragons/0002-big.md")]
+        );
+        assert!(
+            report.findings[0]
+                .detail
+                .contains(&crate::read::MAX_ARTIFACT_BYTES.to_string()),
+            "the finding must name the cap: {}",
+            report.findings[0].detail
+        );
+    }
+
+    #[cfg(unix)]
+    mod symlink_boundary {
+        use super::*;
+        use std::os::unix::fs::symlink;
+
+        #[test]
+        fn symlinked_artifact_position_is_a_conflict_finding_not_fatal() {
+            let tmp = temp_repo();
+            write_dragon(
+                tmp.path(),
+                DRAGONS_DIR,
+                "0001-fine.md",
+                &dragon_markdown("id-1", 1, "open", "Fine"),
+            );
+            let outside = tempfile::tempdir().unwrap();
+            let target = outside.path().join("outside.md");
+            fs::write(
+                &target,
+                dragon_markdown("drg-outside", 2, "open", "Outside"),
+            )
+            .unwrap();
+            symlink(&target, tmp.path().join(DRAGONS_DIR).join("0002-evil.md")).unwrap();
+
+            let report = check(tmp.path()).unwrap();
+
+            assert_eq!(report.artifacts_checked, 1);
+            assert_eq!(
+                problems(&report),
+                vec![("artifact-conflict", "archaeology/dragons/0002-evil.md")]
+            );
+            assert!(
+                report.findings[0].detail.contains("symbolic link"),
+                "{}",
+                report.findings[0].detail
+            );
+        }
+
+        #[test]
+        fn symlinked_managed_directory_is_a_conflict_finding() {
+            let tmp = temp_repo();
+            let outside = tempfile::tempdir().unwrap();
+            fs::write(
+                outside.path().join("0001-planted.md"),
+                dragon_markdown("drg-planted", 1, "open", "Planted"),
+            )
+            .unwrap();
+            fs::remove_dir(tmp.path().join(DRAGONS_DIR)).unwrap();
+            symlink(outside.path(), tmp.path().join(DRAGONS_DIR)).unwrap();
+
+            let report = check(tmp.path()).unwrap();
+
+            assert_eq!(report.artifacts_checked, 0);
+            assert_eq!(problems(&report), vec![("artifact-conflict", DRAGONS_DIR)]);
+            assert!(
+                report.findings[0].detail.contains("symbolic link"),
+                "{}",
+                report.findings[0].detail
+            );
+        }
+
+        #[test]
+        fn symlinked_containment_directory_and_sprint_file_are_findings() {
+            let tmp = temp_repo();
+            seed_sprint(tmp.path(), "0001-real", 1, "closed");
+            // A symlinked containment directory.
+            let outside = tempfile::tempdir().unwrap();
+            let external_sprint = outside.path().join("sprint-tree");
+            fs::create_dir_all(&external_sprint).unwrap();
+            fs::write(
+                external_sprint.join(crate::repo::SPRINT_FILE),
+                "---\nid: spr-evil\nsequence: 2\nkind: sprint\nstatus: active\ncreated: 2026-07-20\n---\n\n# Evil\n",
+            )
+            .unwrap();
+            symlink(
+                &external_sprint,
+                tmp.path().join(crate::repo::SPRINTS_DIR).join("0002-evil"),
+            )
+            .unwrap();
+            // A real containment directory whose sprint.md is a symlink.
+            let hollow = tmp
+                .path()
+                .join(crate::repo::SPRINTS_DIR)
+                .join("0003-hollow");
+            fs::create_dir_all(&hollow).unwrap();
+            symlink(
+                external_sprint.join(crate::repo::SPRINT_FILE),
+                hollow.join(crate::repo::SPRINT_FILE),
+            )
+            .unwrap();
+
+            let report = check(tmp.path()).unwrap();
+
+            assert_eq!(report.artifacts_checked, 1, "{:?}", report.findings);
+            assert_eq!(
+                problems(&report),
+                vec![
+                    ("artifact-conflict", "archaeology/sprints/0002-evil"),
+                    (
+                        "artifact-conflict",
+                        "archaeology/sprints/0003-hollow/sprint.md"
+                    ),
+                ]
+            );
+        }
+
+        #[test]
+        fn symlinked_task_file_is_a_conflict_finding() {
+            let tmp = temp_repo();
+            seed_sprint(tmp.path(), "0001-real", 1, "active");
+            let outside = tempfile::tempdir().unwrap();
+            let target = outside.path().join("task.md");
+            fs::write(
+                &target,
+                "---\nid: tsk-evil\nsequence: 1\nkind: task\nstatus: pending\nsprint: spr-1\ncreated: 2026-07-20\n---\n\n# Evil\n",
+            )
+            .unwrap();
+            symlink(
+                &target,
+                tmp.path()
+                    .join(crate::repo::SPRINTS_DIR)
+                    .join("0001-real")
+                    .join("0001-evil.md"),
+            )
+            .unwrap();
+
+            let report = check(tmp.path()).unwrap();
+
+            assert_eq!(report.artifacts_checked, 1);
+            assert_eq!(
+                problems(&report),
+                vec![(
+                    "artifact-conflict",
+                    "archaeology/sprints/0001-real/0001-evil.md"
+                )]
+            );
+        }
+
+        #[test]
+        fn external_identity_via_directory_symlink_no_longer_satisfies_edges() {
+            // Thread 4 claim 4: without the symlink the edge dangles; with
+            // it, the pre-repair harvest blessed the forged provenance.
+            // Post-repair both states report `dangling-edge`.
+            let tmp = temp_repo();
+            let outside = tempfile::tempdir().unwrap();
+            let external = outside.path().join("external-arch");
+            fs::create_dir_all(&external).unwrap();
+            fs::write(
+                external.join("0001-authority.md"),
+                "---\nid: dec-external-authority\nsequence: 1\nkind: decision\nstatus: accepted\ncreated: 2026-07-20\n---\n\n# External authority\n",
+            )
+            .unwrap();
+            symlink(&external, tmp.path().join("archaeology/imported")).unwrap();
+            write_dragon(
+                tmp.path(),
+                DRAGONS_DIR,
+                "0001-settled.md",
+                &closed_dragon_with_edge(
+                    "resolved-by: \"[[dec-external-authority|external authority]]\"",
+                ),
+            );
+
+            let report = check(tmp.path()).unwrap();
+
+            assert!(!report.healthy());
+            assert_eq!(
+                problems(&report),
+                vec![("dangling-edge", "archaeology/dragons/0001-settled.md")]
+            );
+        }
+    }
+
+    #[test]
+    fn managed_and_unmanaged_claimants_sharing_an_id_are_a_duplicate_finding() {
+        // Thread 5 specimen 1: a healthy managed artifact and a healthy
+        // unmanaged artifact carrying one id must surface, not resolve
+        // silently to a traversal accident.
+        let tmp = temp_repo();
+        write_dragon(
+            tmp.path(),
+            DRAGONS_DIR,
+            "0001-risk.md",
+            &dragon_markdown("dup-shared", 1, "open", "Risk"),
+        );
+        seed_decision(tmp.path(), "dup-shared");
+
+        let report = check(tmp.path()).unwrap();
+
+        assert_eq!(
+            problems(&report),
+            vec![("duplicate-id", "archaeology/decisions/0001-a-decision.md")]
+        );
+        let detail = &report.findings[0].detail;
+        assert!(
+            detail.contains("archaeology/decisions/0001-a-decision.md (unmanaged)")
+                && detail.contains("archaeology/dragons/0001-risk.md"),
+            "every claimant and its disposition must be named: {detail}"
+        );
+    }
+
+    #[test]
+    fn two_unmanaged_claimants_sharing_an_id_are_a_duplicate_finding() {
+        // Thread 5 specimen 2: both claimants sit outside the strong set;
+        // the catalog still sees the collision.
+        let tmp = temp_repo();
+        seed_decision(tmp.path(), "dec-twin");
+        let logs = tmp.path().join("archaeology/logs");
+        fs::create_dir_all(&logs).unwrap();
+        fs::write(
+            logs.join("0001-log.md"),
+            "---\nid: dec-twin\nkind: log\n---\n\n# A log\n",
+        )
+        .unwrap();
+
+        let report = check(tmp.path()).unwrap();
+
+        assert_eq!(report.artifacts_checked, 0);
+        assert_eq!(
+            problems(&report),
+            vec![("duplicate-id", "archaeology/decisions/0001-a-decision.md")]
+        );
+        assert!(
+            report.findings[0]
+                .detail
+                .contains("archaeology/logs/0001-log.md"),
+            "{}",
+            report.findings[0].detail
+        );
+    }
+
+    #[test]
+    fn canonical_and_rejected_claimants_share_one_duplicate_vocabulary() {
+        // Thread 5 specimen 3: a malformed artifact whose id is still
+        // admitted duplicates a healthy artifact's id. Exactly one
+        // duplicate finding names both claimants — no competing
+        // managed-only finding, and the scan continues past the
+        // malformed file.
+        let tmp = temp_repo();
+        write_dragon(
+            tmp.path(),
+            DRAGONS_DIR,
+            "0001-fine.md",
+            &dragon_markdown("dup-x", 1, "open", "Fine"),
+        );
+        write_dragon(
+            tmp.path(),
+            DRAGONS_DIR,
+            "0002-broken.md",
+            &dragon_markdown("dup-x", 2, "done", "Broken"),
+        );
+
+        let report = check(tmp.path()).unwrap();
+
+        assert_eq!(report.artifacts_checked, 1);
+        assert_eq!(
+            problems(&report),
+            vec![
+                ("duplicate-id", "archaeology/dragons/0001-fine.md"),
+                ("malformed-artifact", "archaeology/dragons/0002-broken.md"),
+            ]
+        );
+        let duplicate = &report.findings[0];
+        assert!(
+            duplicate
+                .detail
+                .contains("archaeology/dragons/0001-fine.md")
+                && duplicate
+                    .detail
+                    .contains("archaeology/dragons/0002-broken.md (rejected: malformed-artifact)"),
+            "{}",
+            duplicate.detail
+        );
+    }
+
+    #[test]
+    fn multiple_rejected_claimants_sharing_an_id_are_a_duplicate_finding() {
+        let tmp = temp_repo();
+        write_dragon(
+            tmp.path(),
+            DRAGONS_DIR,
+            "0001-broken.md",
+            &dragon_markdown("dup-b", 1, "done", "Broken one"),
+        );
+        write_dragon(
+            tmp.path(),
+            DRAGONS_DIR,
+            "0002-worse.md",
+            &dragon_markdown("dup-b", 2, "resolved", "Broken two"),
+        );
+
+        let report = check(tmp.path()).unwrap();
+
+        assert_eq!(report.artifacts_checked, 0);
+        assert_eq!(
+            problems(&report),
+            vec![
+                ("duplicate-id", "archaeology/dragons/0001-broken.md"),
+                ("malformed-artifact", "archaeology/dragons/0001-broken.md"),
+                ("malformed-artifact", "archaeology/dragons/0002-worse.md"),
+            ]
+        );
+    }
+
+    #[test]
+    fn edge_to_a_multiply_claimed_id_is_ambiguous_never_validated() {
+        // Thread 5 specimen 2b (the verdict flip): an idea and a decision
+        // share the target id. Neither an acquittal (decision wins) nor a
+        // conviction (idea wins) may be issued from an arbitrary
+        // claimant; the edge is ambiguous, naming every claimant.
+        let tmp = temp_repo();
+        seed_decision(tmp.path(), "amb-flip");
+        seed_idea(
+            tmp.path(),
+            IDEAS_DIR,
+            "0001-idea.md",
+            &idea_markdown("amb-flip", 1, "parked", "Tempting"),
+        );
+        write_dragon(
+            tmp.path(),
+            DRAGONS_DIR,
+            "0001-settled.md",
+            &closed_dragon_with_edge("resolved-by: \"[[amb-flip|either]]\""),
+        );
+
+        let report = check(tmp.path()).unwrap();
+
+        let edge_findings: Vec<&Finding> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.path == "archaeology/dragons/0001-settled.md")
+            .collect();
+        assert_eq!(edge_findings.len(), 1, "{:?}", report.findings);
+        assert_eq!(edge_findings[0].problem, "ambiguous-edge");
+        assert_eq!(edge_findings[0].severity, Severity::Error);
+        assert!(
+            edge_findings[0]
+                .detail
+                .contains("archaeology/decisions/0001-a-decision.md")
+                && edge_findings[0]
+                    .detail
+                    .contains("archaeology/ideas/0001-idea.md"),
+            "{}",
+            edge_findings[0].detail
+        );
+        // The collision itself is separately a duplicate finding.
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.problem == "duplicate-id"),
+            "{:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn unaddressable_claimant_ids_are_non_canonical_findings() {
+        // Task 25: a colon-bearing managed id (quoted — addressability
+        // judges the decoded value) and a whitespace-bearing unmanaged
+        // decision id both draw error findings; decisions do not enter
+        // `artifacts_checked`.
+        let tmp = temp_repo();
+        write_dragon(
+            tmp.path(),
+            DRAGONS_DIR,
+            "0001-odd.md",
+            &dragon_markdown("\"drg:odd\"", 1, "open", "Odd"),
+        );
+        let decisions = tmp.path().join("archaeology/decisions");
+        fs::create_dir_all(&decisions).unwrap();
+        fs::write(
+            decisions.join("0001-spacey.md"),
+            "---\nid: dec spacey\nsequence: 1\nkind: decision\nstatus: accepted\ncreated: 2026-07-20\n---\n\n# Spacey decision\n",
+        )
+        .unwrap();
+
+        let report = check(tmp.path()).unwrap();
+
+        assert_eq!(report.artifacts_checked, 1);
+        assert_eq!(
+            problems(&report),
+            vec![
+                (
+                    "non-canonical-artifact",
+                    "archaeology/decisions/0001-spacey.md"
+                ),
+                ("non-canonical-artifact", "archaeology/dragons/0001-odd.md"),
+            ]
+        );
+        assert!(
+            report.findings[0].detail.contains("whitespace"),
+            "{}",
+            report.findings[0].detail
+        );
+        assert!(
+            report.findings[1].detail.contains("`:`"),
+            "{}",
+            report.findings[1].detail
+        );
+    }
+
+    #[test]
+    fn quoting_an_id_alone_is_not_a_finding() {
+        // Decision 12: YAML quoting of an id is not noncanonical — the
+        // decoded value is the identity.
+        let tmp = temp_repo();
+        write_dragon(
+            tmp.path(),
+            DRAGONS_DIR,
+            "0001-fine.md",
+            &dragon_markdown("\"drg-fine\"", 1, "open", "Fine"),
+        );
+
+        let report = check(tmp.path()).unwrap();
+
+        assert!(report.healthy(), "{:?}", report.findings);
+        assert!(report.findings.is_empty(), "{:?}", report.findings);
+    }
+
+    #[test]
+    fn noncanonical_status_carriers_are_findings_on_parseable_artifacts() {
+        // Task 25 / thread 6 case B: quoted and comment-bearing statuses
+        // still deserialize (the artifacts are checked), but the mutable
+        // carrier is noncanonical — reported so doctor-green implies
+        // transitionable.
+        let tmp = temp_repo();
+        write_dragon(
+            tmp.path(),
+            DRAGONS_DIR,
+            "0001-quoted.md",
+            &dragon_markdown("drg-quoted", 1, "\"open\"", "Quoted"),
+        );
+        write_dragon(
+            tmp.path(),
+            DRAGONS_DIR,
+            "0002-commented.md",
+            &dragon_markdown("drg-commented", 2, "open # note", "Commented"),
+        );
+
+        let report = check(tmp.path()).unwrap();
+
+        assert_eq!(
+            report.artifacts_checked, 2,
+            "both artifacts still parse semantically: {:?}",
+            report.findings
+        );
+        assert_eq!(
+            problems(&report),
+            vec![
+                (
+                    "non-canonical-artifact",
+                    "archaeology/dragons/0001-quoted.md"
+                ),
+                (
+                    "non-canonical-artifact",
+                    "archaeology/dragons/0002-commented.md"
+                ),
+            ]
+        );
+        for finding in &report.findings {
+            assert!(
+                finding.detail.contains("`status: open`"),
+                "the finding must name the canonical spelling: {}",
+                finding.detail
+            );
+        }
+    }
+
+    #[test]
+    fn accepted_whitespace_around_a_status_value_is_not_a_finding() {
+        let tmp = temp_repo();
+        write_dragon(
+            tmp.path(),
+            DRAGONS_DIR,
+            "0001-padded.md",
+            "---\nid: drg-padded\nsequence: 1\nkind: dragon\nstatus:   open  \ncreated: 2026-07-20\n---\n\n# Padded\n",
+        );
+
+        let report = check(tmp.path()).unwrap();
+
+        assert!(report.healthy(), "{:?}", report.findings);
+        assert!(report.findings.is_empty(), "{:?}", report.findings);
+    }
+
+    #[test]
+    fn unaddressable_duplicate_claimants_draw_both_findings() {
+        // Decision 12: addressability never filters the catalog — two
+        // claimants of an unaddressable id remain duplicate evidence.
+        let tmp = temp_repo();
+        let decisions = tmp.path().join("archaeology/decisions");
+        fs::create_dir_all(&decisions).unwrap();
+        for name in ["0001-a.md", "0002-b.md"] {
+            fs::write(
+                decisions.join(name),
+                "---\nid: dec spacey\nkind: decision\n---\n\n# Twin\n",
+            )
+            .unwrap();
+        }
+
+        let report = check(tmp.path()).unwrap();
+
+        assert_eq!(
+            problems(&report),
+            vec![
+                ("duplicate-id", "archaeology/decisions/0001-a.md"),
+                ("non-canonical-artifact", "archaeology/decisions/0001-a.md"),
+                ("non-canonical-artifact", "archaeology/decisions/0002-b.md"),
+            ]
         );
     }
 

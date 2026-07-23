@@ -22,7 +22,12 @@ fn main() -> ExitCode {
 fn run(command: &Command) -> Result<(), Error> {
     match command {
         Command::Init => init(),
-        Command::New { collection, title } => new_artifact(*collection, title),
+        Command::New {
+            collection,
+            title,
+            sprint,
+            json,
+        } => new_artifact(*collection, title, sprint.as_deref(), *json),
         Command::List {
             collection,
             json,
@@ -143,9 +148,13 @@ fn close(target: &ArtifactTarget, resolved_by: Option<&str>) -> Result<(), Error
     let collection = match target {
         ArtifactTarget::Reference(reference) => reference.collection,
         ArtifactTarget::Id(id) => {
-            let mut union = read::scan(&root, &read::DRAGON)?;
-            union.extend(read::scan_sprints(&root)?);
-            union.extend(read::scan_tasks(&root)?);
+            let union = || -> Result<Vec<read::Artifact>, Error> {
+                let mut all = read::scan(&root, &read::DRAGON)?;
+                all.extend(read::scan_sprints(&root)?);
+                all.extend(read::scan_tasks(&root)?);
+                Ok(all)
+            };
+            let union = union().map_err(|err| err.blocking(id))?;
             let artifact = read::resolve(&union, read::Selector::Id(id), id)?;
             match artifact.summary.kind.as_str() {
                 "sprint" => Collection::Sprint,
@@ -262,6 +271,29 @@ fn fortune() -> Result<(), Error> {
     Ok(())
 }
 
+/// Parse a `--sprint` value into a sprint target (decision 15): `sprint:N`
+/// or an addressable stable id. A sequence reference into any other
+/// collection cannot name a sprint and is refused.
+fn parse_sprint_selector(raw: &str) -> Result<(ArtifactTarget, String), Error> {
+    let target: ArtifactTarget =
+        raw.parse()
+            .map_err(|reason: String| Error::InvalidInvocation {
+                message: format!("invalid `--sprint {raw}`: {reason}"),
+            })?;
+    if let ArtifactTarget::Reference(reference) = &target
+        && reference.collection != Collection::Sprint
+    {
+        return Err(Error::InvalidInvocation {
+            message: format!(
+                "`--sprint {raw}` names a {} reference; the owning sprint is \
+                 selected as `sprint:N` or by a sprint's stable id",
+                reference.collection
+            ),
+        });
+    }
+    Ok((target, raw.to_string()))
+}
+
 /// Resolve the current working directory.
 fn cwd() -> Result<PathBuf, Error> {
     std::env::current_dir().map_err(|source| Error::Filesystem {
@@ -272,26 +304,78 @@ fn cwd() -> Result<PathBuf, Error> {
 }
 
 /// Create an artifact in the enclosing repository and render the outcome.
-fn new_artifact(collection: Collection, title: &str) -> Result<(), Error> {
+///
+/// Human and JSON projections consume the same semantic result: the
+/// created artifact plus its decision 13 reachability. Flat creation
+/// (dragons, ideas) runs the observational post-write probe; sprint and
+/// task creation performed their strict containment scans before
+/// writing, so a successful write is reachable by construction. A
+/// degraded creation stays exit 0 — the write happened — with the stable
+/// `warning[degraded-repository]:` line on stderr, leaving stdout (human
+/// line or JSON object) unpolluted.
+fn new_artifact(
+    collection: Collection,
+    title: &str,
+    sprint: Option<&str>,
+    json: bool,
+) -> Result<(), Error> {
+    // `--sprint` chooses a task's owning sprint (decision 15) and belongs
+    // to no other kind's creation vocabulary.
+    if sprint.is_some() && collection != Collection::Task {
+        return Err(Error::InvalidInvocation {
+            message: format!(
+                "`--sprint` chooses the owning sprint for `strata new task`; \
+                 it does not apply to `strata new {}`",
+                collection.name()
+            ),
+        });
+    }
+    let selection = sprint.map(parse_sprint_selector).transpose()?;
     let root = repo::discover(&cwd()?)?;
     let created = match collection {
         Collection::Dragon => artifact::create_dragon(&root, title)?,
         Collection::Idea => artifact::create_idea(&root, title)?,
         Collection::Sprint => artifact::create_sprint(&root, title)?,
-        Collection::Task => artifact::create_task(&root, title)?,
+        Collection::Task => artifact::create_task(
+            &root,
+            title,
+            selection
+                .as_ref()
+                .map(|(target, display)| (selector(target), display.as_str())),
+        )?,
     };
-    println!(
-        "created {} at {}",
-        created.reference(),
-        created.relative_path.display()
-    );
+    let reachability = match collection {
+        Collection::Dragon => artifact::probe_reachability(&root, &read::DRAGON, &created),
+        Collection::Idea => artifact::probe_reachability(&root, &read::IDEA, &created),
+        Collection::Sprint | Collection::Task => artifact::Reachability::Reachable,
+    };
+    if json {
+        println!("{}", to_json(&created.record()));
+    } else {
+        println!(
+            "created {} at {}",
+            created.reference(),
+            created.relative_path.display()
+        );
+    }
+    if let artifact::Reachability::Degraded { blocker } = &reachability {
+        eprintln!(
+            "warning[degraded-repository]: created {} at {}, but repository \
+             degradation currently blocks normal access — {blocker}; the \
+             artifact was created and the exit status remains success; \
+             repairing the blocker restores normal access",
+            created.reference(),
+            created.relative_path.display()
+        );
+    }
     Ok(())
 }
 
 /// List a collection's artifacts and render the requested projection.
 ///
-/// `--active` narrows tasks to the active sprint's; it is meaningless for
-/// other collections and refused rather than ignored.
+/// `--active` narrows tasks to the union of every active sprint's tasks
+/// (decision 15); it is meaningless for other collections and refused
+/// rather than ignored.
 fn list(collection: Collection, json: bool, active: bool) -> Result<(), Error> {
     let root = repo::discover(&cwd()?)?;
     let mut artifacts = scan(&root, collection)?;
@@ -299,18 +383,26 @@ fn list(collection: Collection, json: bool, active: bool) -> Result<(), Error> {
         if collection != Collection::Task {
             return Err(Error::InvalidInvocation {
                 message: format!(
-                    "`--active` filters tasks by the active sprint; it does \
+                    "`--active` filters tasks by the active sprints; it does \
                      not apply to `strata list {}s`",
                     collection.name()
                 ),
             });
         }
         let sprints = read::scan_sprints(&root)?;
-        let active_id = sprints
+        let active_ids: Vec<&str> = sprints
             .iter()
-            .find(|sprint| sprint.summary.status == Status::Active)
-            .map(|sprint| sprint.summary.id.clone());
-        artifacts.retain(|task| task.summary.sprint == active_id);
+            .filter(|sprint| sprint.summary.status == Status::Active)
+            .map(|sprint| sprint.summary.id.as_str())
+            .collect();
+        // The union across every active sprint, in the scan's global
+        // deterministic task order; closed sprints' tasks drop out.
+        artifacts.retain(|task| {
+            task.summary
+                .sprint
+                .as_deref()
+                .is_some_and(|owner| active_ids.contains(&owner))
+        });
     }
     if json {
         let summaries: Vec<_> = artifacts.iter().map(|a| &a.summary).collect();
@@ -343,14 +435,23 @@ fn list(collection: Collection, json: bool, active: bool) -> Result<(), Error> {
 /// scanned and the id resolved over the union.
 fn show(target: &ArtifactTarget, json: bool) -> Result<(), Error> {
     let root = repo::discover(&cwd()?)?;
+    // A sibling that blocks the strict scan gets the requested target
+    // attached (decision 13): the diagnostic names what could not be
+    // delivered as well as what blocked it.
+    let display = target.to_string();
     let artifacts = match target {
-        ArtifactTarget::Reference(reference) => scan(&root, reference.collection)?,
+        ArtifactTarget::Reference(reference) => {
+            scan(&root, reference.collection).map_err(|err| err.blocking(&display))?
+        }
         ArtifactTarget::Id(_) => {
-            let mut all = read::scan(&root, &read::DRAGON)?;
-            all.extend(read::scan(&root, &read::IDEA)?);
-            all.extend(read::scan_sprints(&root)?);
-            all.extend(read::scan_tasks(&root)?);
-            all
+            let union = || -> Result<Vec<read::Artifact>, Error> {
+                let mut all = read::scan(&root, &read::DRAGON)?;
+                all.extend(read::scan(&root, &read::IDEA)?);
+                all.extend(read::scan_sprints(&root)?);
+                all.extend(read::scan_tasks(&root)?);
+                Ok(all)
+            };
+            union().map_err(|err| err.blocking(&display))?
         }
     };
     let artifact = read::resolve(&artifacts, selector(target), &target.to_string())?;

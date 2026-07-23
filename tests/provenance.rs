@@ -159,6 +159,141 @@ fn an_idea_target_is_refused_by_the_vocabulary() {
 }
 
 #[test]
+fn an_ambiguous_stable_id_target_is_refused_naming_every_claimant() {
+    // Task 23: a second admitted claimant of the target id — here an
+    // unmanaged log — makes the stable-id arm refuse with the same
+    // `ambiguous-reference` contract as the `kind:N` arm, before any
+    // mutation.
+    let tmp = init_repo();
+    seed_dragon(tmp.path());
+    seed_decision(tmp.path());
+    fs::create_dir_all(tmp.path().join("archaeology/logs")).unwrap();
+    fs::write(
+        tmp.path().join("archaeology/logs/0001-imposter.md"),
+        "---\nid: dec-settle-it\nkind: log\n---\n\n# Imposter\n",
+    )
+    .unwrap();
+    let original = fs::read_to_string(tmp.path().join(DRAGONS_DIR).join("0001-risk.md")).unwrap();
+
+    let out = strata_in(
+        tmp.path(),
+        &["close", "dragon:1", "--resolved-by", "dec-settle-it"],
+    );
+
+    assert_eq!(out.status.code(), Some(8), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(err.starts_with("error[ambiguous-reference]:"), "{err}");
+    for path in [
+        "archaeology/decisions/0001-settle-it.md",
+        "archaeology/logs/0001-imposter.md",
+    ] {
+        assert!(err.contains(path), "missing `{path}`: {err}");
+    }
+    assert_eq!(
+        fs::read_to_string(tmp.path().join(DRAGONS_DIR).join("0001-risk.md")).unwrap(),
+        original,
+        "refusal must precede any mutation"
+    );
+}
+
+#[test]
+fn binding_to_a_single_bracket_title_succeeds_and_doctor_stays_green() {
+    // Task 25 / decision 12: decision 10's label grammar as written — a
+    // frozen label may contain a single `]`, including at the end (raw
+    // text ending `]]]`), and the result is doctor-green.
+    let tmp = init_repo();
+    seed_dragon(tmp.path());
+    fs::create_dir_all(tmp.path().join(DECISIONS_DIR)).unwrap();
+    fs::write(
+        tmp.path().join(DECISIONS_DIR).join("0001-bracket.md"),
+        "---\nid: dec-bracket\nsequence: 1\nkind: decision\nstatus: accepted\ncreated: 2026-07-20\n---\n\n# Fix numbers[]\n",
+    )
+    .unwrap();
+
+    let out = strata_in(
+        tmp.path(),
+        &["close", "dragon:1", "--resolved-by", "dec-bracket"],
+    );
+
+    assert!(out.status.success(), "{}", stderr(&out));
+    let content = fs::read_to_string(tmp.path().join(DRAGONS_DIR).join("0001-risk.md")).unwrap();
+    assert!(content.contains("status: closed"), "{content}");
+    assert!(
+        content.contains("resolved-by: \"[[dec-bracket|Fix numbers[]]]\""),
+        "the label ends in one `]`, so the raw marker ends in `]]]`: {content}"
+    );
+    assert_doctor_healthy(tmp.path());
+}
+
+#[test]
+fn binding_to_a_double_bracket_title_is_refused_before_mutation() {
+    // Task 25: a `]]`-bearing title cannot be frozen into any label; the
+    // refusal names the class and precedes any write.
+    let tmp = init_repo();
+    seed_dragon(tmp.path());
+    fs::create_dir_all(tmp.path().join(DECISIONS_DIR)).unwrap();
+    fs::write(
+        tmp.path().join(DECISIONS_DIR).join("0001-worst.md"),
+        "---\nid: dec-worst\nsequence: 1\nkind: decision\nstatus: accepted\ncreated: 2026-07-20\n---\n\n# The [[worst]] title\n",
+    )
+    .unwrap();
+    let original = fs::read_to_string(tmp.path().join(DRAGONS_DIR).join("0001-risk.md")).unwrap();
+
+    let out = strata_in(
+        tmp.path(),
+        &["close", "dragon:1", "--resolved-by", "dec-worst"],
+    );
+
+    assert_eq!(out.status.code(), Some(5), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(err.starts_with("error[malformed-artifact]:"), "{err}");
+    assert!(err.contains("`]]`"), "must name the class: {err}");
+    assert_eq!(
+        fs::read_to_string(tmp.path().join(DRAGONS_DIR).join("0001-risk.md")).unwrap(),
+        original,
+        "refusal must precede any mutation"
+    );
+}
+
+#[test]
+fn binding_to_a_whitespace_bearing_id_is_refused_and_doctor_agrees() {
+    // Task 25 / thread 6 case C: binding to `dec spacey` formerly
+    // succeeded and wrote an unparseable marker. Now the bind refuses
+    // pre-mutation naming the class, and doctor reports the same
+    // unmanaged claimant.
+    let tmp = init_repo();
+    seed_dragon(tmp.path());
+    fs::create_dir_all(tmp.path().join(DECISIONS_DIR)).unwrap();
+    fs::write(
+        tmp.path().join(DECISIONS_DIR).join("0001-spacey.md"),
+        "---\nid: dec spacey\nsequence: 1\nkind: decision\nstatus: accepted\ncreated: 2026-07-20\n---\n\n# Spacey decision\n",
+    )
+    .unwrap();
+    let original = fs::read_to_string(tmp.path().join(DRAGONS_DIR).join("0001-risk.md")).unwrap();
+
+    let out = strata_in(
+        tmp.path(),
+        &["close", "dragon:1", "--resolved-by", "dec spacey"],
+    );
+
+    assert_eq!(out.status.code(), Some(5), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(err.starts_with("error[malformed-artifact]:"), "{err}");
+    assert!(err.contains("whitespace"), "must name the class: {err}");
+    assert_eq!(
+        fs::read_to_string(tmp.path().join(DRAGONS_DIR).join("0001-risk.md")).unwrap(),
+        original,
+        "refusal must precede any mutation"
+    );
+
+    let doctor = strata_in(tmp.path(), &["doctor"]);
+    assert_eq!(doctor.status.code(), Some(9), "{}", stderr(&doctor));
+    let report = stdout(&doctor);
+    assert!(report.contains("non-canonical-artifact"), "{report}");
+    assert!(report.contains("0001-spacey.md"), "{report}");
+}
+
+#[test]
 fn bare_transitions_behave_exactly_as_before() {
     let tmp = init_repo();
     seed_dragon(tmp.path());

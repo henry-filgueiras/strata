@@ -88,3 +88,15 @@ count, JSON severity) and the dangling-edge exit-9 path. Dogfooded
 live: `doctor` green over 20 artifacts with all three retrofitted
 edges resolving; a scratch-copy probe with a corrupted target id
 produced `dangling-edge` and exit 9 against the real corpus.
+
+## Erratum (2026-07-22)
+
+The Verification's "213 tests" was false at this task's implementation
+commit `c993e16`: the complete suite there was 200, under the
+established sum-of-harnesses convention (the sum of every `cargo test`
+harness result, matching the `#[test]` inventory). Task 16's "203" at
+`3e06504` was verified exact under the same convention and serves as
+the convention control, so this was a transcription/reporting error,
+not a counting-convention mismatch. The original text above remains
+for historical visibility. Adjudicated by comment thread 9; repaired
+by task 30.

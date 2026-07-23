@@ -90,6 +90,33 @@ pub enum Error {
 }
 
 impl Error {
+    /// Attach the requested target to a strict-scan failure (decision 13,
+    /// task 27): a malformed or conflicting sibling blocked the scan, so
+    /// the command could not deliver `target` — the diagnostic then names
+    /// both the target and the blocker instead of only the sibling. The
+    /// original typed category is preserved; every other category passes
+    /// through unchanged.
+    pub fn blocking(self, target: &str) -> Error {
+        let context = |reason: String| {
+            format!(
+                "{reason}; this file blocked the strict scan, so the \
+                 requested `{target}` could not be delivered — repairing \
+                 the blocker restores access"
+            )
+        };
+        match self {
+            Error::MalformedArtifact { path, reason } => Error::MalformedArtifact {
+                path,
+                reason: context(reason),
+            },
+            Error::ArtifactConflict { path, reason } => Error::ArtifactConflict {
+                path,
+                reason: context(reason),
+            },
+            other => other,
+        }
+    }
+
     /// Stable machine-readable identifier for this error category.
     pub fn code(&self) -> &'static str {
         match self {

@@ -130,3 +130,86 @@ a disposable projection, deliberately not built now.
 - CLAUDE.md's layout and conventions are updated by the same task that
   records this decision; the status-equals-directory-name convention
   is retired for new writing immediately.
+
+## Amendment: narrowed to lifecycle authority (2026-07-22)
+
+Thread 7 claim B ([[cmt-s5-placement-and-cardinality|placement and
+sprint cardinality]], owed by
+[[tsk_01KY64ZPXPRBGH5S99G5E99TZY|task 29]]) found that this record's
+universal claim — "one placement rule for every current and future
+collection: all artifacts of a collection live directly in that
+collection's directory" — is contradicted by its own text and the
+landed corpus: sprints use per-artifact containment directories, tasks
+nest inside them with no collection directory of their own, sprint and
+task share one root, and task ownership is carried in both containment
+and the `sprint:` field with doctor policing agreement. The original
+text above is preserved unchanged as history; this amendment
+supersedes its universal placement claim. The migrated corpus and the
+code are untouched — the migration was adjudicated keep-unchanged on
+its merits; the defect was the claim's breadth.
+
+### The surviving rule
+
+- Lifecycle state is never encoded in canonical placement, and
+  lifecycle transitions never move files. This is the load-bearing
+  content of this decision, and it stands.
+- Stable containment is **collection-specific**, not universally
+  flat. Dragons and ideas happen to be flat; sprints own stable
+  containment directories that never change over their lives; tasks
+  live inside their owning sprint's stable containment. Sprint and
+  task share the `archaeology/sprints` root — the layout does not
+  pretend tasks live directly in one global task directory.
+
+### Accepted cost: containment plus `sprint:` dual bookkeeping
+
+A task's ownership is recorded twice — by the containment directory
+holding its file and by its `sprint:` front-matter field — and doctor
+checks their agreement (`misfiled-task`). This duplication is
+accepted, and it differs materially from the lifecycle-directory
+status duplication this decision retired: neither carrier changes
+during a lifecycle transition, so tool-driven transitions cannot
+desynchronize the pair. Only hand edits or malformed writes can.
+Status-in-directory, by contrast, could desynchronize during every
+interrupted transition, which is why it needed decision 8's two-step
+contract and a diagnosable torn state.
+
+### The directory-authoritative variant, evaluated
+
+The alternatives above evaluate lifecycle subdirectories only in
+their duplicated-`status` form. The missing variant — lifecycle
+directories exist and the `status:` field is **removed**, making the
+directory the sole authority — is evaluated here rather than left
+implicitly falsified:
+
+- it genuinely dissolves the double-bookkeeping objection: with one
+  carrier there is no agreement for doctor to police;
+- paths still move on every transition, harming `git log`/`blame`
+  continuity unless every caller remembers `--follow`;
+- terminal-state directories still hit the empty-directory problem
+  (dragon 2): Git cannot track an emptied `open/`;
+- sprint and task `closed:` stamps still require a content rewrite,
+  so their transitions become rewrite-plus-rename again, restoring
+  exactly the decision 8 two-step returned-error/interruption
+  contract that in-place rewriting retired;
+- it fails universality on this same corpus: closing a sprint would
+  either relocate its entire containment tree — churning every task
+  path — or retain front-matter status for sprints, defeating
+  directory authority.
+
+The variant therefore still loses, but on recorded evidence rather
+than implied falsification.
+
+### Comment placement: a deliberate provisional exception
+
+Comment threads currently practice lifecycle placement under
+`archaeology/comments/open/` and `archaeology/comments/resolved/`,
+with a `status:` field duplicating the directory. This is recorded as
+a deliberate provisional exception, not a generalization of the
+canonical placement rule: comments remain **unmanaged** specimens
+(provisional test data for ideas 11 and 19), and the layout is
+tolerated temporarily because manual review operations lean on
+browse-time glanceability. Promotion of idea 11 into a managed
+collection is the trigger to decide and migrate stable canonical
+placement; a managed transition must not preserve lifecycle-directory
+movement without a new explicit decision. Until promotion, manual
+moves continue under the documented convention.

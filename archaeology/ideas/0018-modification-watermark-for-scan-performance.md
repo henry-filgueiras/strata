@@ -39,3 +39,31 @@ mail dir readers and build systems skipping by mtime watermark.
 [[idea-declarative-collection-specs|Declarative collection specs]]
 would give the watermark one generic implementation point instead of
 per-collection ones.
+
+## Adjudication note (2026-07-22, comment thread 8)
+
+Reviewed in [[cmt-s5-read-cost-and-watermark|thread 8]]; retained
+parked with the claim narrowed, not rewritten:
+
+- The watermark can only ever be a best-effort disposable hint, never
+  correctness authority. A false skip is silent wrong output, and the
+  invalidation failures are real: preserved-mtime copies (`cp -p`,
+  `tar`, `rsync -t`), backdated edits (`touch -t`/`-r`), clock
+  anomalies (a future-dated watermark skips everything), and
+  same-second edits under coarse mtime granularity. Branch switches
+  are mostly conservative in practice only because `git checkout`
+  rewrites changed files with fresh mtimes — an emergent property of
+  Git's implementation, not a contract.
+- Verifying the premise ("everything older is still terminal")
+  re-reads the front matter the skip hoped to avoid, so a validated
+  watermark saves nothing and an unvalidated one is trusted blindly.
+  Correctness must never consult it; deleting it may change
+  performance only, never any command's output.
+- Thread 8's cost mapping found the dominant scan cost today is bytes
+  *retained* (every strict scan holds the full corpus in memory to
+  print summaries), not bytes read — and the retention remedy is a
+  summary-plus-locator read seam that needs no cache at all.
+
+Prerequisites before un-parking: a felt scan cost in a real
+repository (this idea's original bar); the summary/locator seam
+first; and a demonstrated invalidation scheme.
