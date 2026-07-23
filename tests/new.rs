@@ -159,6 +159,111 @@ fn unsluggable_title_is_an_invalid_invocation() {
 }
 
 #[test]
+fn control_character_titles_are_refused_for_every_creating_command() {
+    let tmp = init_repo();
+    let title = "Evil title\n# Second heading";
+
+    for collection in ["dragon", "idea", "sprint", "task"] {
+        let out = strata_in(tmp.path(), &["new", collection, title]);
+
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "for {collection}:\n{}",
+            stderr(&out)
+        );
+        let err = stderr(&out);
+        assert!(
+            err.starts_with("error[invalid-invocation]: "),
+            "for {collection}: {err}"
+        );
+        assert!(
+            err.contains("U+000A") && err.contains("single line"),
+            "must name the constraint and the offending character safely: {err}"
+        );
+        assert_eq!(
+            err.trim_end().lines().count(),
+            1,
+            "the diagnostic must be one safely rendered line: {err:?}"
+        );
+    }
+
+    let dragons: Vec<_> = fs::read_dir(tmp.path().join(DRAGONS_DIR))
+        .unwrap()
+        .collect();
+    assert!(dragons.is_empty(), "nothing may be written");
+    for dir in ["archaeology/ideas", "archaeology/sprints"] {
+        assert!(
+            !tmp.path().join(dir).exists(),
+            "a refused title must leave no structural trace at {dir}"
+        );
+    }
+}
+
+#[test]
+fn tab_and_carriage_return_titles_are_refused() {
+    let tmp = init_repo();
+
+    for title in ["tab\there", "carriage\rreturn"] {
+        let out = strata_in(tmp.path(), &["new", "dragon", title]);
+
+        assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+        assert!(
+            stderr(&out).starts_with("error[invalid-invocation]: "),
+            "{}",
+            stderr(&out)
+        );
+    }
+}
+
+#[test]
+fn each_kind_round_trips_through_show_and_doctor_stays_green() {
+    let tmp = init_repo();
+    // The sprint precedes its task, respecting the one-active-sprint rule.
+    for (collection, title) in [
+        ("dragon", "Round trip risk"),
+        ("idea", "Round trip idea"),
+        ("sprint", "Round trip sprint"),
+        ("task", "Round trip task"),
+    ] {
+        let out = strata_in(tmp.path(), &["new", collection, title]);
+        assert!(
+            out.status.success(),
+            "new {collection} failed:\n{}",
+            stderr(&out)
+        );
+    }
+
+    for (reference, heading) in [
+        ("dragon:1", "# Round trip risk"),
+        ("idea:1", "# Round trip idea"),
+        ("sprint:1", "# Round trip sprint"),
+        ("task:1", "# Round trip task"),
+    ] {
+        let out = strata_in(tmp.path(), &["show", reference]);
+        assert!(out.status.success(), "show {reference}:\n{}", stderr(&out));
+        assert!(
+            stdout(&out).contains(heading),
+            "show {reference} must reach the created artifact:\n{}",
+            stdout(&out)
+        );
+    }
+
+    let doctor = strata_in(tmp.path(), &["doctor"]);
+    assert!(
+        doctor.status.success(),
+        "doctor must stay green:\n{}\n{}",
+        stdout(&doctor),
+        stderr(&doctor)
+    );
+    assert!(
+        stdout(&doctor).contains("4 artifact(s) checked, no problems found"),
+        "{}",
+        stdout(&doctor)
+    );
+}
+
+#[test]
 fn malformed_artifact_filename_blocks_creation_with_a_named_path() {
     let tmp = init_repo();
     fs::write(tmp.path().join(DRAGONS_DIR).join("scratch.txt"), "junk").unwrap();

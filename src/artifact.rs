@@ -24,7 +24,10 @@
 //! - no existing file is ever overwritten: content is staged in a temporary
 //!   file and persisted with an atomic no-clobber rename;
 //! - a failed creation leaves no partial destination artifact (an abandoned
-//!   temporary is a dot-file, which artifact scans ignore);
+//!   temporary is a dot-file, which artifact scans ignore), and a failed
+//!   sprint creation removes the containment directories it materialized —
+//!   only those, in reverse creation order, never a pre-existing directory
+//!   or concurrent content;
 //! - duplicate display sequences produced by concurrent allocation remain on
 //!   disk as distinct files, detectable later by `strata doctor`.
 
@@ -96,7 +99,20 @@ pub fn create_idea(root: &Path, title: &str) -> Result<NewArtifact, Error> {
 /// so the shared machinery reduces to slugging, identity, and the safe
 /// write.
 pub fn create_sprint(root: &Path, title: &str) -> Result<NewArtifact, Error> {
+    create_sprint_with(root, title, write_new)
+}
+
+/// Implementation seam for [`create_sprint`]: `write` performs the final
+/// `sprint.md` write, so fault-injection tests can fail it after the
+/// containment directory has been materialized. Production callers always
+/// pass [`write_new`].
+fn create_sprint_with(
+    root: &Path,
+    title: &str,
+    write: impl FnOnce(&Path, &str, &str) -> Result<(), Error>,
+) -> Result<NewArtifact, Error> {
     const SECTIONS: &[&str] = &["Goal", "Rationale", "Success criteria", "Non-goals"];
+    validate_title(SPRINT.kind, title)?;
     let title = title.trim();
     let slug = slugify(title).ok_or_else(|| Error::InvalidInvocation {
         message: format!(
@@ -150,8 +166,12 @@ pub fn create_sprint(root: &Path, title: &str) -> Result<NewArtifact, Error> {
     });
 
     let dir_rel = format!("{SPRINTS_DIR}/{sequence:04}-{slug}");
-    crate::repo::ensure_dir(root, &dir_rel, &mut Vec::new())?;
-    write_new(&root.join(&dir_rel), SPRINT_FILE, &content)?;
+    let mut created_dirs = Vec::new();
+    let result = crate::repo::ensure_dir(root, &dir_rel, &mut created_dirs)
+        .and_then(|()| write(&root.join(&dir_rel), SPRINT_FILE, &content));
+    if let Err(original) = result {
+        return Err(rollback_sprint_dirs(root, &created_dirs, original));
+    }
 
     Ok(NewArtifact {
         kind: SPRINT.kind,
@@ -159,6 +179,61 @@ pub fn create_sprint(root: &Path, title: &str) -> Result<NewArtifact, Error> {
         sequence,
         relative_path: Path::new(&dir_rel).join(SPRINT_FILE),
     })
+}
+
+/// Compensate a failed sprint creation (decision 8, returned-error class):
+/// remove exactly the directories this invocation created, in reverse
+/// creation order, using empty-directory removal only. A pre-existing
+/// directory is never in `created`, and `fs::remove_dir` refuses a
+/// non-empty directory, so concurrent content is never deleted to make
+/// rollback pass. When cleanup succeeds the original error is returned
+/// unchanged; when cleanup itself fails — decision 8's doubly degraded
+/// case — the error names the original creation failure, the exact path
+/// whose cleanup failed, and the debris left for inspection.
+fn rollback_sprint_dirs(root: &Path, created: &[PathBuf], original: Error) -> Error {
+    for rel in created.iter().rev() {
+        let path = root.join(rel);
+        if let Err(source) = fs::remove_dir(&path) {
+            return Error::Filesystem {
+                operation: "rollback of failed sprint creation".into(),
+                path: path.clone(),
+                source: io::Error::new(
+                    source.kind(),
+                    format!(
+                        "{source}; the original creation failure was: {original}; \
+                         this directory, created by the failed invocation, could \
+                         not be removed — structural debris may remain and \
+                         requires inspection"
+                    ),
+                ),
+            };
+        }
+    }
+    original
+}
+
+/// Refuse a title that cannot render into a valid single-heading artifact.
+///
+/// Checked on the raw supplied title, before trimming, slugging, or any
+/// other creation work: every character [`char::is_control`] admits — LF,
+/// CR, tab, NUL, DEL, and the remaining Unicode control characters — would
+/// split or pollute the rendered `# <title>` heading, which the shared
+/// reader then rejects. Nothing is sanitized or discarded; the invocation
+/// is refused, and the offending character is reported by escaped spelling
+/// and code point, never interpolated raw.
+fn validate_title(kind: &str, title: &str) -> Result<(), Error> {
+    if let Some(c) = title.chars().find(|c| c.is_control()) {
+        return Err(Error::InvalidInvocation {
+            message: format!(
+                "cannot create a {kind}: the title must be a single line \
+                 without control characters, but it contains `{}` (U+{:04X}) — \
+                 retry with a plain single-line title",
+                c.escape_debug(),
+                c as u32
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Create a new artifact in its collection's home lifecycle state.
@@ -175,8 +250,9 @@ fn create(
     sections: &[&str],
     title: &str,
 ) -> Result<NewArtifact, Error> {
-    let title = title.trim();
     let kind = collection.kind;
+    validate_title(kind, title)?;
+    let title = title.trim();
     let slug = slugify(title).ok_or_else(|| Error::InvalidInvocation {
         message: format!(
             "cannot create a {kind} titled `{title}`: the title must contain \
@@ -221,6 +297,7 @@ fn create(
 /// takes the next display sequence globally across every sprint.
 pub fn create_task(root: &Path, title: &str) -> Result<NewArtifact, Error> {
     const SECTIONS: &[&str] = &["Objective", "Acceptance criteria"];
+    validate_title(TASK.kind, title)?;
     let title = title.trim();
     let slug = slugify(title).ok_or_else(|| Error::InvalidInvocation {
         message: format!(
@@ -857,6 +934,215 @@ mod tests {
             dragons_dir_entries(tmp.path()),
             Vec::<String>::new(),
             "a failed creation must leave nothing behind"
+        );
+    }
+
+    #[test]
+    fn control_character_titles_are_refused_before_trim_without_writing() {
+        let tmp = temp_repo();
+        for (title, code) in [
+            ("Evil title\n# Second heading", "U+000A"),
+            ("carriage\rreturn", "U+000D"),
+            ("tab\there", "U+0009"),
+            ("nul\0byte", "U+0000"),
+            ("del\u{7f}char", "U+007F"),
+            // Leading and trailing controls must be refused, not hidden by
+            // the later trim.
+            ("\tleading control", "U+0009"),
+            ("trailing control\n", "U+000A"),
+        ] {
+            let err = create_dragon(tmp.path(), title).unwrap_err();
+            match &err {
+                Error::InvalidInvocation { message } => {
+                    assert!(message.contains(code), "must name {code}: {message}");
+                    assert!(
+                        message.contains("single line") && message.contains("control characters"),
+                        "must name the constraint: {message}"
+                    );
+                    assert!(
+                        !message.chars().any(char::is_control),
+                        "must not embed a raw control character: {message:?}"
+                    );
+                }
+                other => panic!("expected invalid invocation for {title:?}, got {other:?}"),
+            }
+            assert_eq!(
+                dragons_dir_entries(tmp.path()),
+                Vec::<String>::new(),
+                "a refused title must write nothing, for {title:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_creator_validates_the_title_before_other_work() {
+        let tmp = temp_repo();
+        let bad = "bad\ntitle";
+
+        for err in [
+            create_dragon(tmp.path(), bad).unwrap_err(),
+            create_idea(tmp.path(), bad).unwrap_err(),
+            // No sprint is active, yet the refusal is about the title:
+            // validation precedes the active-sprint scan.
+            create_task(tmp.path(), bad).unwrap_err(),
+        ] {
+            assert!(matches!(err, Error::InvalidInvocation { .. }), "{err:?}");
+            assert!(err.to_string().contains("U+000A"), "{err}");
+        }
+
+        // A sprint is active, yet the refusal is about the title: sprint
+        // validation precedes the one-active-sprint check too.
+        create_sprint(tmp.path(), "Occupied").unwrap();
+        let err = create_sprint(tmp.path(), bad).unwrap_err();
+        assert!(matches!(err, Error::InvalidInvocation { .. }), "{err:?}");
+        assert!(
+            err.to_string().contains("U+000A") && !err.to_string().contains("active"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn marker_significant_punctuation_remains_legal_title_content() {
+        let tmp = temp_repo();
+
+        let dragon = create_dragon(tmp.path(), "Handle ]] and # and | and ] safely").unwrap();
+
+        let content = fs::read_to_string(tmp.path().join(&dragon.relative_path)).unwrap();
+        assert!(
+            content.contains("# Handle ]] and # and | and ] safely"),
+            "{content}"
+        );
+    }
+
+    #[test]
+    fn failed_sprint_write_rolls_back_created_directories_and_returns_the_original_error() {
+        let tmp = temp_repo();
+
+        let err = create_sprint_with(tmp.path(), "Doomed", |_, _, _| {
+            Err(Error::Filesystem {
+                operation: "write temporary artifact".into(),
+                path: PathBuf::from("injected"),
+                source: io::Error::other("injected fault"),
+            })
+        })
+        .unwrap_err();
+
+        assert!(matches!(err, Error::Filesystem { .. }), "{err:?}");
+        let message = err.to_string();
+        assert!(
+            message.contains("injected fault") && !message.contains("rollback"),
+            "the original error must come back unchanged: {message}"
+        );
+        assert!(
+            !tmp.path().join(SPRINTS_DIR).exists(),
+            "every directory the invocation created must be removed"
+        );
+        assert!(
+            tmp.path().join("archaeology").is_dir(),
+            "pre-existing ancestors must survive"
+        );
+    }
+
+    #[test]
+    fn failed_sprint_write_rolls_back_every_ancestor_it_created() {
+        // Simulate `git clone` of an empty repository: the whole layout is
+        // materialized by this one invocation, so all of it rolls back.
+        let tmp = temp_repo();
+        fs::remove_dir_all(tmp.path().join("archaeology")).unwrap();
+
+        let err = create_sprint_with(tmp.path(), "Doomed", |_, _, _| {
+            Err(Error::Filesystem {
+                operation: "write temporary artifact".into(),
+                path: PathBuf::from("injected"),
+                source: io::Error::other("injected fault"),
+            })
+        })
+        .unwrap_err();
+
+        assert!(matches!(err, Error::Filesystem { .. }), "{err:?}");
+        assert!(
+            !tmp.path().join("archaeology").exists(),
+            "the invocation created the whole chain, so the whole chain rolls back"
+        );
+    }
+
+    #[test]
+    fn rollback_preserves_preexisting_directories_and_the_retry_reuses_the_sequence() {
+        let tmp = temp_repo();
+        let history = tmp.path().join(SPRINTS_DIR).join("0004-history");
+        fs::create_dir_all(&history).unwrap();
+        fs::write(
+            history.join(SPRINT_FILE),
+            "---\nid: spr-history\nsequence: 4\nkind: sprint\nstatus: closed\ncreated: 2026-07-20\n---\n\n# History\n",
+        )
+        .unwrap();
+
+        let err = create_sprint_with(tmp.path(), "Doomed", |_, _, _| {
+            Err(Error::Filesystem {
+                operation: "write temporary artifact".into(),
+                path: PathBuf::from("injected"),
+                source: io::Error::other("injected fault"),
+            })
+        })
+        .unwrap_err();
+
+        assert!(matches!(err, Error::Filesystem { .. }), "{err:?}");
+        assert!(
+            !tmp.path().join(SPRINTS_DIR).join("0005-doomed").exists(),
+            "the fresh containment directory must be removed"
+        );
+        assert!(
+            tmp.path().join(SPRINTS_DIR).is_dir() && history.is_dir(),
+            "pre-existing directories are never removed"
+        );
+
+        let sprint = create_sprint(tmp.path(), "Recovered").unwrap();
+        assert_eq!(sprint.sequence, 5, "the sequence stays available for retry");
+        assert!(
+            tmp.path()
+                .join(SPRINTS_DIR)
+                .join("0005-recovered")
+                .join(SPRINT_FILE)
+                .is_file()
+        );
+    }
+
+    #[test]
+    fn obstructed_rollback_is_a_filesystem_failure_naming_original_and_leftover() {
+        let tmp = temp_repo();
+
+        let err = create_sprint_with(tmp.path(), "Doomed", |dir, _, _| {
+            // Concurrent content appears in the fresh directory before the
+            // write fails; rollback must not delete it.
+            fs::write(dir.join("concurrent.md"), "someone else's work").unwrap();
+            Err(Error::Filesystem {
+                operation: "write temporary artifact".into(),
+                path: dir.to_path_buf(),
+                source: io::Error::other("injected fault"),
+            })
+        })
+        .unwrap_err();
+
+        let leftover = tmp.path().join(SPRINTS_DIR).join("0001-doomed");
+        match &err {
+            Error::Filesystem { path, .. } => {
+                assert_eq!(path, &leftover, "must name the path whose cleanup failed")
+            }
+            other => panic!("expected filesystem failure, got {other:?}"),
+        }
+        let message = err.to_string();
+        assert!(
+            message.contains("injected fault"),
+            "must name the original creation failure: {message}"
+        );
+        assert!(
+            message.contains("debris") && message.contains("inspection"),
+            "must warn that debris remains: {message}"
+        );
+        assert_eq!(
+            fs::read_to_string(leftover.join("concurrent.md")).unwrap(),
+            "someone else's work",
+            "concurrent content is never deleted to make rollback pass"
         );
     }
 

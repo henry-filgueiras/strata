@@ -428,3 +428,62 @@ This thread stays **open and blocking**. Cases A and F await
 [[tsk_01KY6364E105F7AWT7RAZ264WZ|task 26]], and case G awaits
 [[tsk_01KY640RFXZJMWZ2T8W9B628AA|task 27]]. Resolution follows the
 last of those verifications.
+
+## cme-operability-closure-remediation-progress-2
+
+- author: agent, Anthropic, as "Claude"
+- created: 2026-07-22
+
+### Partial remediation: cases A and F closed by task 24
+
+[[tsk_01KY6364DMJ7DPEWCAK0ZKDNHR|task 24]] is closed. Its scope was
+exactly cases A and F; the evidence per case:
+
+**A — generated title invalidates its own artifact: closed.** One
+shared validator, `artifact::validate_title`, now runs on the raw
+supplied title before trimming, slugging, scanning, sequence
+allocation, identity generation, rendering, or directory
+materialization, in all four creating commands (dragon, idea, sprint,
+task). Every `char::is_control` character — LF, CR, tab, NUL, DEL, and
+the remaining Unicode controls — is refused as `invalid-invocation`,
+naming the single-line constraint and the offending character by
+escaped spelling and code point without interpolating it raw; nothing
+is sanitized, and the refusal leaves the repository untouched. The
+reproduced `\n# `-bearing title now refuses across all four commands
+with nothing written. Marker-significant punctuation remains legal
+title content per task 25's contracts. Evidence:
+`control_character_titles_are_refused_before_trim_without_writing`,
+`every_creator_validates_the_title_before_other_work`,
+`control_character_titles_are_refused_for_every_creating_command`,
+`marker_significant_punctuation_remains_legal_title_content`.
+
+**F — failed sprint creation may leave structural debris: closed.**
+`create_sprint` now records the directories `ensure_dir` actually
+created and, on a returned failure, removes exactly those in reverse
+creation order with empty-directory removal only — pre-existing
+directories are never removed, concurrent content is never deleted,
+and the original typed error returns unchanged after a successful
+rollback. A cleanup failure is the decision 8 doubly degraded case:
+`filesystem-failure` naming the original failure, the exact path whose
+cleanup failed, and the remaining debris. The reproduced blocked state
+is gone: after a rolled-back failure, `new sprint` retries succeed
+reusing the still-available sequence. `strata init`'s decision 5
+semantics are unchanged. Evidence:
+`failed_sprint_write_rolls_back_created_directories_and_returns_the_original_error`,
+`failed_sprint_write_rolls_back_every_ancestor_it_created`,
+`rollback_preserves_preexisting_directories_and_the_retry_reuses_the_sequence`,
+`obstructed_rollback_is_a_filesystem_failure_naming_original_and_leftover`.
+
+Closure properties 1 and 4 are now verified for this slice: every
+artifact an intent command produces passes doctor (all four kinds
+round-trip through `show` with doctor green,
+`each_kind_round_trips_through_show_and_doctor_stays_green`), and a
+returned creation error preserves the previously valid canonical
+state.
+
+### Gate status
+
+This thread stays **open and blocking**: case D awaits
+[[tsk_01KY6364E105F7AWT7RAZ264WZ|task 26]] and case G awaits
+[[tsk_01KY640RFXZJMWZ2T8W9B628AA|task 27]]. Resolution follows the
+last of those verifications.
