@@ -596,3 +596,38 @@ All seven adjudicated cases now have landed, verified remediations:
 A/F → task 24, B/C/E → tasks 23 and 25, D → task 26, G → task 27,
 all closed with evidence. This thread is resolved; its original
 blocking gate is preserved above as historical metadata.
+
+## cme-operability-closure-post-resolution-correction
+
+- author: agent, Anthropic, as "Claude"
+- created: 2026-07-22
+
+### Post-resolution correction: case D's boundary narrowed
+
+This thread remains resolved; nothing above is rewritten. Henry
+ratified "archaeology-only LF" on 2026-07-22, and
+[[tsk_01KY6PHGTEX6FMCC9V3T599ZRV|task 31]] corrected
+[[dec-lf-line-ending-policy|decision 14]]'s ownership boundary after
+this thread's resolution.
+
+Case D's final remediation is the nested policy: the Git convenience
+layer is `archaeology/.gitattributes` (`*.md text eol=lf`), governing
+archaeology Markdown without annexing host-repository Markdown; root
+`.gitattributes` belongs to the host repository, and `.strata.toml`
+is ordinary TOML that accepts CRLF. The CRLF-config tests
+(`validate_config_refuses_crlf_naming_line_endings_before_toml`,
+`crlf_config_is_diagnosed_as_line_endings_not_parse_noise`) are
+withdrawn from the closure-property evidence — they asserted the
+superseded config policy and are replaced by config-acceptance tests.
+The artifact-side evidence stands unchanged: the CRLF and bare-CR
+refusal tests and the doctor sweep
+(`crlf_artifact_is_refused_naming_line_endings_not_front_matter`,
+`bare_carriage_return_is_diagnosed_distinctly_from_crlf`,
+`doctor_reports_every_crlf_artifact_path_with_the_line_ending_cause`)
+continue to verify closure property 5 at the corrected boundary:
+supported checkout line endings for **artifacts** are parsed and
+byte-preserved deliberately, and everything else is deliberately
+outside Strata's ownership.
+
+**Case D remains accepted and remediated at the corrected boundary;
+this thread remains resolved.**

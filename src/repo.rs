@@ -20,14 +20,19 @@ pub const CONFIG_TEMPLATE: &str = "version = 1\n";
 /// The config schema version this build supports.
 pub const SUPPORTED_VERSION: i64 = 1;
 
-/// Root Git-attributes policy file materialized by `strata init`.
-pub const GITATTRIBUTES_FILE: &str = ".gitattributes";
+/// Root-relative path of the Git-attributes policy `strata init`
+/// materializes. It lives inside `archaeology/` (decision 14 as
+/// amended): the policy governs archaeology Markdown without annexing
+/// the host repository's root Markdown, and a root `.gitattributes`
+/// belongs to the host repository — init never creates, inspects,
+/// merges, rejects, replaces, or deletes one.
+pub const GITATTRIBUTES_FILE: &str = "archaeology/.gitattributes";
 
-/// The canonical line-ending policy written by `strata init` (decision
-/// 14): LF-only for Markdown artifacts and the repository marker,
-/// enforced by Git at checkout where Git is present. The parser enforces
+/// The line-ending policy written by `strata init` (decision 14 as
+/// amended): LF-only for Markdown beneath `archaeology/`, enforced by
+/// Git at checkout where Git is present. The artifact parser enforces
 /// the same format without Git.
-pub const GITATTRIBUTES_TEMPLATE: &str = "*.md text eol=lf\n/.strata.toml text eol=lf\n";
+pub const GITATTRIBUTES_TEMPLATE: &str = "*.md text eol=lf\n";
 
 /// Root-relative directory holding every dragon artifact, regardless of
 /// lifecycle state (decision 11: placement is flat).
@@ -75,14 +80,16 @@ impl InitReport {
 /// - Required directories are created when missing and accepted when
 ///   present; any non-directory object occupying a required path component
 ///   is a conflict.
-/// - A missing `.gitattributes` gains the decision 14 line-ending policy,
-///   written with the same atomic no-clobber discipline as the config. An
-///   existing regular `.gitattributes` is preserved byte-for-byte and
-///   never parsed: Strata cannot safely infer or merge arbitrary
-///   Git-attribute policies, so the parser's LF diagnosis remains the
-///   backstop for repositories carrying their own. A non-regular object
-///   at that path is a conflict. No Git executable or `.git` directory is
-///   required.
+/// - A missing `archaeology/.gitattributes` gains the decision 14
+///   line-ending policy, written with the same atomic no-clobber
+///   discipline as the config. An existing regular file there is
+///   preserved byte-for-byte and never parsed: Strata cannot safely
+///   infer or merge arbitrary Git-attribute policies, so the parser's
+///   LF diagnosis remains the backstop. A non-regular object at that
+///   managed path is a conflict. A root `.gitattributes` is outside the
+///   init surface entirely — never created, inspected, or touched, even
+///   when its contents disagree with Strata's policy. No Git executable
+///   or `.git` directory is required.
 /// - The config is written last, via an exclusive temporary file and an
 ///   atomic no-clobber persist: after a failed run `.strata.toml` either
 ///   does not exist or is complete — never partial or truncated.
@@ -132,13 +139,21 @@ pub fn init(root: &Path) -> Result<InitReport, Error> {
             return Err(Error::ArtifactConflict {
                 path: attributes_path,
                 reason: format!(
-                    "a {} occupies the Git-attributes policy path, which \
-                     must be a regular file",
+                    "a {} occupies the `{GITATTRIBUTES_FILE}` policy path, \
+                     which must be a regular file",
                     file_kind(&meta)
                 ),
             });
         }
-        Err(err) if err.kind() == io::ErrorKind::NotFound => true,
+        // NotADirectory means a parent component is not a directory; the
+        // nested path itself is then simply absent here, and the required
+        // directory walk below reports the real conflict at the component.
+        Err(err)
+            if err.kind() == io::ErrorKind::NotFound
+                || err.kind() == io::ErrorKind::NotADirectory =>
+        {
+            true
+        }
         Err(source) => {
             return Err(Error::Filesystem {
                 operation: "inspect".into(),
@@ -218,18 +233,16 @@ pub fn discover(start: &Path) -> Result<PathBuf, Error> {
 
 /// Validate the contents of a `.strata.toml` config.
 ///
-/// The decision 14 LF-conformance check runs before TOML parsing: TOML
-/// itself would accept CRLF, but the marker is repository-controlled
-/// canonical content and follows the same LF-only format as every
-/// artifact, so a rejected config names line endings truthfully.
+/// The config is ordinary TOML configuration, not a splice-mutated
+/// artifact, so it sits outside decision 14's LF-only artifact-byte
+/// contract (as amended): any line endings the TOML parser accepts —
+/// including CRLF — are valid, and Strata never normalizes or rewrites
+/// the file.
 ///
 /// Accepts any TOML table whose `version` equals the supported integer.
 /// Unknown keys are tolerated: keys added later within the same schema
 /// version must not make older configs unreadable.
 pub fn validate_config(content: &str) -> Result<(), String> {
-    if let Some(reason) = crate::read::lf_violation(content) {
-        return Err(reason);
-    }
     let table: toml::Table = content
         .parse()
         .map_err(|err| format!("not valid TOML: {err}"))?;
@@ -422,7 +435,7 @@ mod tests {
     }
 
     #[test]
-    fn init_materializes_the_line_ending_policy() {
+    fn init_materializes_the_nested_line_ending_policy_only() {
         let tmp = temp_root();
         let root = tmp.path();
 
@@ -433,6 +446,11 @@ mod tests {
             GITATTRIBUTES_TEMPLATE
         );
         assert!(report.created.contains(&PathBuf::from(GITATTRIBUTES_FILE)));
+        assert!(
+            !root.join(".gitattributes").exists(),
+            "a root .gitattributes belongs to the host repository and is \
+             never created"
+        );
     }
 
     #[test]
@@ -442,6 +460,7 @@ mod tests {
         // Not even valid attribute syntax: preservation must not depend on
         // Strata understanding the policy.
         let custom = "* text=auto\n<<not attribute syntax>>\n";
+        fs::create_dir_all(root.join("archaeology")).unwrap();
         fs::write(root.join(GITATTRIBUTES_FILE), custom).unwrap();
 
         let report = init(root).unwrap();
@@ -454,10 +473,37 @@ mod tests {
     }
 
     #[test]
+    fn root_gitattributes_is_ignored_and_untouched_even_when_it_disagrees() {
+        let tmp = temp_root();
+        let root = tmp.path();
+        // A host policy that contradicts Strata's: still not init's to
+        // inspect, merge, reject, replace, or delete.
+        let host_policy = "*.md text eol=crlf\n";
+        fs::write(root.join(".gitattributes"), host_policy).unwrap();
+
+        let report = init(root).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(root.join(".gitattributes")).unwrap(),
+            host_policy,
+            "the host repository's root policy must survive byte-identical"
+        );
+        assert!(
+            !report.created.contains(&PathBuf::from(".gitattributes")),
+            "the root path is outside the init surface"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join(GITATTRIBUTES_FILE)).unwrap(),
+            GITATTRIBUTES_TEMPLATE,
+            "the nested policy is still materialized"
+        );
+    }
+
+    #[test]
     fn gitattributes_path_occupied_by_directory_is_a_conflict() {
         let tmp = temp_root();
         let root = tmp.path();
-        fs::create_dir(root.join(GITATTRIBUTES_FILE)).unwrap();
+        fs::create_dir_all(root.join(GITATTRIBUTES_FILE)).unwrap();
 
         let err = init(root).unwrap_err();
 
@@ -680,12 +726,28 @@ mod tests {
     }
 
     #[test]
-    fn validate_config_refuses_crlf_naming_line_endings_before_toml() {
-        // TOML itself accepts CRLF, so this refusal must come from the
-        // decision 14 check, and must name the true cause.
-        let err = validate_config("version = 1\r\n").unwrap_err();
-        assert!(err.contains("CRLF"), "{err}");
-        assert!(err.contains("LF-only"), "{err}");
+    fn validate_config_accepts_crlf_line_endings() {
+        // The config is ordinary TOML outside the artifact-byte contract
+        // (decision 14 as amended): whatever the TOML parser accepts is
+        // valid.
+        assert_eq!(validate_config("version = 1\r\n"), Ok(()));
+        assert_eq!(
+            validate_config("# annotated\r\nversion = 1\r\nextra = \"ok\"\r\n"),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn init_preserves_an_existing_valid_crlf_config_byte_for_byte() {
+        let tmp = temp_root();
+        let root = tmp.path();
+        let crlf = "# hand-written\r\nversion = 1\r\n";
+        fs::write(root.join(CONFIG_FILE), crlf).unwrap();
+
+        let report = init(root).unwrap();
+
+        assert_eq!(fs::read_to_string(root.join(CONFIG_FILE)).unwrap(), crlf);
+        assert!(!report.created.contains(&PathBuf::from(CONFIG_FILE)));
     }
 
     #[test]

@@ -103,3 +103,61 @@ user never requested.
   diagnosis instead of a misleading one.
 - Task 26 deliberately excludes generic newline normalization,
   encoding repair, and editor configuration.
+
+## Amendment: archaeology ownership boundary (2026-07-22)
+
+Henry ratified "archaeology-only LF" on 2026-07-22: this decision owns
+LF only within the `archaeology/` tree. The original text above is
+preserved as historical evidence; its root-wide Markdown and
+`.strata.toml` claims are superseded by this amendment
+([[tsk_01KY6PHGTEX6FMCC9V3T599ZRV|task 31]]). The decision remains
+accepted.
+
+### The corrected contract
+
+- LF remains the canonical byte format for Markdown beneath
+  `archaeology/`. Artifact parsing still refuses CRLF and bare
+  carriage returns before front-matter delimiter discovery, preserving
+  the single-representation splicing contract; refused files stay
+  byte-identical, and nothing is silently normalized.
+- The Git convenience policy now lives at
+  `archaeology/.gitattributes`, containing exactly:
+
+  ```text
+  *.md text eol=lf
+  ```
+
+  Because the attributes file is inside `archaeology/`, it governs
+  archaeology Markdown without annexing root README files or other
+  host-repository Markdown.
+- Root Markdown is outside Strata's ownership, and a root
+  `.gitattributes` belongs to the host repository: `strata init` must
+  not create, inspect, merge, reject, replace, or delete one — even
+  when its contents disagree with Strata's policy.
+- `.strata.toml` is ordinary TOML configuration, not a splice-mutated
+  Markdown artifact. It sits outside the LF-only artifact-byte
+  contract and accepts whatever line endings the TOML parser accepts,
+  including CRLF; invalid TOML keeps its ordinary truthful TOML
+  diagnosis.
+- Git remains optional: the attributes file is a convenience layer,
+  and the artifact parser remains the correctness backstop.
+
+### Rationale: safety mechanism versus ownership intervention
+
+Parser refusal is required for safe artifact mutation — byte-exact
+splicing cannot tolerate a second line-ending representation, so the
+fail-closed check is Strata's to impose on Strata's files. Governing
+unrelated Markdown or config bytes is a different claim: it is neither
+necessary for that safety property nor within Strata's namespace. The
+original root-wide `*.md` rule rewrote the checkout behavior of every
+Markdown file in the host repository, and the config LF refusal
+rejected configurations TOML itself defines as valid, for no
+mutation-safety gain — Strata never splices `.strata.toml`.
+
+### Migration boundary
+
+Task 26's root `.gitattributes` existed only on this unmerged review
+campaign, so this repository removes that known file explicitly in
+task 31's commit. No generic code deletes an arbitrary root
+`.gitattributes`: Strata cannot prove who created or modified such a
+file, so existing root policies are wholly outside the init surface.

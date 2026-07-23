@@ -113,15 +113,17 @@ pub(crate) fn read_artifact_bytes(path: &Path) -> Result<String, Error> {
     })
 }
 
-/// The reason `content` violates the LF-only canonical format, or `None`
-/// when it conforms (decision 14).
+/// The reason `content` violates the LF-only canonical artifact format,
+/// or `None` when it conforms (decision 14 as amended).
 ///
-/// Every managed artifact and `.strata.toml` is LF-only: CRLF sequences
-/// and bare carriage returns are refused before front-matter or TOML
-/// parsing rather than normalized, so byte-exact splicing and safe writes
-/// never become line-ending-sensitive. The diagnosis names the actual
-/// cause — it must never decay into "missing front matter" — and gives
-/// the repair.
+/// Every managed artifact — Markdown beneath `archaeology/` — is
+/// LF-only: CRLF sequences and bare carriage returns are refused before
+/// front-matter delimiter discovery rather than normalized, so
+/// byte-exact splicing and safe writes never become
+/// line-ending-sensitive. This is the artifact-byte contract only:
+/// `.strata.toml` is ordinary TOML configuration outside it. The
+/// diagnosis names the actual cause — it must never decay into "missing
+/// front matter" — and gives the repair.
 pub(crate) fn lf_violation(content: &str) -> Option<String> {
     if !content.contains('\r') {
         return None;
@@ -132,10 +134,10 @@ pub(crate) fn lf_violation(content: &str) -> Option<String> {
         "a bare carriage return (CR) with no following line feed"
     };
     Some(format!(
-        "contains {cause}; Strata's canonical format is LF-only \
-         (decision 14) — convert the file to LF line endings (for \
-         example with `dos2unix`) and keep the repository's \
-         `.gitattributes` line-ending policy"
+        "contains {cause}; Strata artifacts are LF-only (decision 14) — \
+         convert the file to LF line endings (for example with \
+         `dos2unix`) and keep the `archaeology/.gitattributes` \
+         line-ending policy"
     ))
 }
 

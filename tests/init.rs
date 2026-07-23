@@ -9,8 +9,8 @@ use std::path::Path;
 use std::process::Output;
 
 const CONFIG_FILE: &str = ".strata.toml";
-const GITATTRIBUTES_FILE: &str = ".gitattributes";
-const GITATTRIBUTES_POLICY: &str = "*.md text eol=lf\n/.strata.toml text eol=lf\n";
+const GITATTRIBUTES_FILE: &str = "archaeology/.gitattributes";
+const GITATTRIBUTES_POLICY: &str = "*.md text eol=lf\n";
 const REQUIRED_DIRS: [&str; 2] = ["archaeology/dragons", "archaeology/dragons"];
 
 fn strata_in(dir: &Path, args: &[&str]) -> Output {
@@ -50,8 +50,12 @@ fn init_creates_expected_layout_in_empty_non_git_directory() {
     assert_eq!(
         fs::read_to_string(tmp.path().join(GITATTRIBUTES_FILE)).unwrap(),
         GITATTRIBUTES_POLICY,
-        "init must materialize the decision 14 line-ending policy \
-         without requiring Git"
+        "init must materialize the nested decision 14 policy without \
+         requiring Git"
+    );
+    assert!(
+        !tmp.path().join(".gitattributes").exists(),
+        "fresh init must not create a root .gitattributes"
     );
     let text = stdout(&out);
     assert!(text.contains("initialized"), "{text}");
@@ -59,10 +63,17 @@ fn init_creates_expected_layout_in_empty_non_git_directory() {
 }
 
 #[test]
-fn shipped_gitattributes_carries_the_exact_two_policy_rules() {
-    // This repository ships the same policy `strata init` writes.
-    let shipped = concat!(env!("CARGO_MANIFEST_DIR"), "/.gitattributes");
-    assert_eq!(fs::read_to_string(shipped).unwrap(), GITATTRIBUTES_POLICY);
+fn shipped_policy_exists_only_at_the_nested_archaeology_path() {
+    // This repository ships the same policy `strata init` writes, only
+    // inside archaeology/ (decision 14 as amended); the task 26 root
+    // file is gone.
+    let nested = concat!(env!("CARGO_MANIFEST_DIR"), "/archaeology/.gitattributes");
+    assert_eq!(fs::read_to_string(nested).unwrap(), GITATTRIBUTES_POLICY);
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/.gitattributes");
+    assert!(
+        !std::path::Path::new(root).exists(),
+        "root .gitattributes belongs to the host repository"
+    );
 }
 
 #[test]
@@ -88,6 +99,7 @@ fn init_rerun_leaves_the_line_ending_policy_untouched() {
 fn existing_gitattributes_is_preserved_byte_for_byte() {
     let tmp = tempfile::tempdir().unwrap();
     let custom = "# hand-rolled policy\n*.md -text\n";
+    fs::create_dir_all(tmp.path().join("archaeology")).unwrap();
     fs::write(tmp.path().join(GITATTRIBUTES_FILE), custom).unwrap();
 
     let out = strata_in(tmp.path(), &["init"]);
@@ -108,7 +120,7 @@ fn existing_gitattributes_is_preserved_byte_for_byte() {
 #[test]
 fn gitattributes_path_occupied_by_directory_is_an_artifact_conflict() {
     let tmp = tempfile::tempdir().unwrap();
-    fs::create_dir(tmp.path().join(GITATTRIBUTES_FILE)).unwrap();
+    fs::create_dir_all(tmp.path().join(GITATTRIBUTES_FILE)).unwrap();
 
     let out = strata_in(tmp.path(), &["init"]);
 

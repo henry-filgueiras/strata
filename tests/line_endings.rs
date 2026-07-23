@@ -61,6 +61,10 @@ fn expect_line_ending_refusal(out: &Output, path_needle: &str) {
     assert!(err.contains("CRLF"), "must name the cause:\n{err}");
     assert!(err.contains("LF-only"), "must name the policy:\n{err}");
     assert!(
+        err.contains("archaeology/.gitattributes"),
+        "the repair names the archaeology policy:\n{err}"
+    );
+    assert!(
         !err.contains("missing front matter"),
         "must not decay into the front-matter diagnosis:\n{err}"
     );
@@ -165,20 +169,39 @@ fn doctor_reports_every_crlf_artifact_path_with_the_line_ending_cause() {
 }
 
 #[test]
-fn crlf_config_is_diagnosed_as_line_endings_not_parse_noise() {
+fn crlf_config_is_valid_and_discovery_succeeds_through_it() {
+    // The config is ordinary TOML outside the artifact-byte contract
+    // (decision 14 as amended): CRLF is whatever the TOML parser says
+    // it is — valid.
     let tmp = tempfile::tempdir().unwrap();
-    fs::write(tmp.path().join(CONFIG_FILE), "version = 1\r\n").unwrap();
+    let crlf = "version = 1\r\n";
+    fs::write(tmp.path().join(CONFIG_FILE), crlf).unwrap();
+    fs::create_dir_all(tmp.path().join(DRAGONS_DIR)).unwrap();
 
     let out = strata_in(tmp.path(), &["list", "dragons"]);
 
-    // A CRLF marker blocks repository discovery, but the direct error
-    // still names line endings truthfully.
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        fs::read_to_string(tmp.path().join(CONFIG_FILE)).unwrap(),
+        crlf,
+        "the config is never normalized or rewritten"
+    );
+}
+
+#[test]
+fn invalid_crlf_toml_keeps_the_ordinary_truthful_toml_diagnosis() {
+    let tmp = tempfile::tempdir().unwrap();
+    fs::write(tmp.path().join(CONFIG_FILE), "version = [broken\r\n").unwrap();
+
+    let out = strata_in(tmp.path(), &["list", "dragons"]);
+
     assert_eq!(out.status.code(), Some(5), "{}", stderr(&out));
     let err = stderr(&out);
     assert!(err.starts_with("error[malformed-artifact]: "), "{err}");
-    assert!(err.contains(CONFIG_FILE), "{err}");
-    assert!(err.contains("CRLF"), "{err}");
-    assert!(err.contains("LF-only"), "{err}");
+    assert!(
+        err.contains("not valid TOML"),
+        "the diagnosis is about TOML, not line endings:\n{err}"
+    );
 }
 
 #[test]

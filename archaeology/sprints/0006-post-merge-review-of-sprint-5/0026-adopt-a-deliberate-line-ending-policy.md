@@ -114,3 +114,21 @@ policy; refused directory conflict. Complete suite 325 tests green
 (204 lib + 121 integration); `strata doctor` 60 artifacts, no
 problems; `scripts/check.sh` passes. Task 24 title/rollback and
 task 25 representation regressions remain green.
+
+## Supersession note (2026-07-22)
+
+This task's Result accurately records what landed at commit `4168539`.
+Its root-wide `.gitattributes` (covering all host-repository `*.md`
+plus `/.strata.toml`) and the config LF refusal were subsequently
+judged broader than Strata's ownership: Henry ratified
+"archaeology-only LF" on 2026-07-22, and
+[[tsk_01KY6PHGTEX6FMCC9V3T599ZRV|task 31]] with
+[[dec-lf-line-ending-policy|decision 14]]'s amendment establish the
+final boundary — the Git policy lives at
+`archaeology/.gitattributes`, root Markdown and root `.gitattributes`
+belong to the host repository, and `.strata.toml` accepts what the
+TOML parser accepts. The artifact-side safety this task built —
+fail-closed CRLF/bare-CR refusal before front-matter discovery, the
+truthful line-ending diagnosis, byte-identical refused files — remains
+intact and unweakened. The original acceptance criteria and Result
+above are preserved unchanged.
