@@ -18,6 +18,17 @@
 //! The artifact title is the single ATX level-one heading (`# Title`) after
 //! the front matter. Setext headings (`Title` underlined with `=`) are not
 //! recognized. Headings inside fenced code blocks are ignored.
+//!
+//! # Filesystem boundary
+//!
+//! A repository working tree is untrusted input (thread 4, task 22): Git
+//! round-trips symlinks and arbitrarily large files. Every canonical
+//! position is therefore classified without following symlinks — a symlink
+//! or other non-regular entry where an artifact belongs is refused, never
+//! read — and every content read goes through the bounded
+//! [`read_artifact_bytes`] seam. This is per-file rejection, not
+//! containment: no canonicalization, and no claim of race-free confinement
+//! against concurrent replacement.
 
 use std::fmt;
 use std::fs;
@@ -29,6 +40,78 @@ use serde::{Deserialize, Serialize};
 use crate::artifact::MAX_SEQUENCE;
 use crate::error::Error;
 use crate::repo::{DRAGONS_DIR, IDEAS_DIR, SPRINTS_DIR};
+
+/// Per-file byte cap on every managed content read (thread 4, task 22).
+///
+/// 1 MiB is roughly forty times the largest artifact in this repository
+/// (~27 KB): far above any plausible narrative artifact, small enough that
+/// one hostile or accidental oversized file cannot exhaust process memory
+/// through a single read. This is a per-file safety bound only — a strict
+/// scan may still retain up to N × cap across N valid artifacts; the
+/// aggregate-retention seam is deliberately deferred (thread 8, idea 18).
+pub const MAX_ARTIFACT_BYTES: u64 = 1024 * 1024;
+
+/// Read at most [`MAX_ARTIFACT_BYTES`] from `path`, returning `None` when
+/// the file holds more than the cap.
+///
+/// The bounded `take` is the enforcement, not any metadata inspection: at
+/// most `MAX_ARTIFACT_BYTES + 1` bytes are ever pulled, so the bound holds
+/// even when a file grows after being classified, and an oversized payload
+/// is never fully allocated.
+pub(crate) fn read_capped(path: &Path) -> io::Result<Option<Vec<u8>>> {
+    use std::io::Read;
+    let file = fs::File::open(path)?;
+    let mut bytes = Vec::new();
+    file.take(MAX_ARTIFACT_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_ARTIFACT_BYTES {
+        return Ok(None);
+    }
+    Ok(Some(bytes))
+}
+
+/// Read one managed file's content through the task 22 boundary: the path
+/// must be a regular file — classified with `symlink_metadata`, so a
+/// symlink is refused rather than followed — and the content must fit
+/// [`MAX_ARTIFACT_BYTES`] and be valid UTF-8.
+///
+/// Callers classify entries during their walks; this re-check is the
+/// backstop that keeps every byte-reading site behind one seam.
+pub(crate) fn read_artifact_bytes(path: &Path) -> Result<String, Error> {
+    let meta = fs::symlink_metadata(path).map_err(|source| Error::Filesystem {
+        operation: "inspect".into(),
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if !meta.is_file() {
+        return Err(Error::ArtifactConflict {
+            path: path.to_path_buf(),
+            reason: format!(
+                "a {} occupies a managed artifact position; artifacts must \
+                 be regular files, and Strata never follows symbolic links \
+                 inside a repository",
+                crate::repo::file_kind(&meta)
+            ),
+        });
+    }
+    let bytes = read_capped(path)
+        .map_err(|source| Error::Filesystem {
+            operation: "read".into(),
+            path: path.to_path_buf(),
+            source,
+        })?
+        .ok_or_else(|| Error::MalformedArtifact {
+            path: path.to_path_buf(),
+            reason: format!(
+                "file exceeds the {MAX_ARTIFACT_BYTES}-byte per-file read \
+                 limit; Strata refuses to load oversized artifacts into \
+                 memory"
+            ),
+        })?;
+    String::from_utf8(bytes).map_err(|_| Error::MalformedArtifact {
+        path: path.to_path_buf(),
+        reason: "contents are not valid UTF-8".into(),
+    })
+}
 
 /// Lifecycle state of a managed artifact, carried only in front matter per
 /// decision 11: placement is flat, so the directory says nothing about
@@ -270,9 +353,12 @@ struct FrontMatter {
 pub fn scan(root: &Path, collection: &Collection) -> Result<Vec<Artifact>, Error> {
     let mut artifacts = Vec::new();
     let dir = root.join(collection.dir);
-    for name in managed_entries(&dir)? {
+    for (name, file_type) in managed_entries(&dir)? {
         let path = dir.join(&name);
-        if path.is_dir() {
+        if file_type.is_symlink() || !(file_type.is_file() || file_type.is_dir()) {
+            return Err(non_regular_entry(&path, &file_type));
+        }
+        if file_type.is_dir() {
             return Err(Error::ArtifactConflict {
                 path,
                 reason: "a directory sits inside a managed collection \
@@ -314,14 +400,20 @@ pub fn scan_sprints(root: &Path) -> Result<Vec<Artifact>, Error> {
             .join(SPRINTS_DIR)
             .join(&dir_rel)
             .join(crate::repo::SPRINT_FILE);
-        if !path.is_file() {
-            return Err(Error::MalformedArtifact {
-                path: root.join(SPRINTS_DIR).join(&dir_rel),
-                reason: format!(
-                    "sprint containment directories must hold a `{}` artifact",
-                    crate::repo::SPRINT_FILE
-                ),
-            });
+        match fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_file() => {}
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(non_regular_entry(&path, &meta.file_type()));
+            }
+            Ok(_) | Err(_) => {
+                return Err(Error::MalformedArtifact {
+                    path: root.join(SPRINTS_DIR).join(&dir_rel),
+                    reason: format!(
+                        "sprint containment directories must hold a `{}` artifact",
+                        crate::repo::SPRINT_FILE
+                    ),
+                });
+            }
         }
         artifacts.push(parse_artifact_at(
             &path,
@@ -345,12 +437,15 @@ pub fn scan_tasks(root: &Path) -> Result<Vec<Artifact>, Error> {
     for dir_name in sprint_dir_names(root)? {
         let dir_rel = format!("{SPRINTS_DIR}/{dir_name}");
         let dir = root.join(&dir_rel);
-        for name in managed_entries(&dir)? {
+        for (name, file_type) in managed_entries(&dir)? {
             if name == crate::repo::SPRINT_FILE {
                 continue;
             }
             let path = dir.join(&name);
-            if path.is_dir() {
+            if file_type.is_symlink() || !(file_type.is_file() || file_type.is_dir()) {
+                return Err(non_regular_entry(&path, &file_type));
+            }
+            if file_type.is_dir() {
                 return Err(Error::ArtifactConflict {
                     path,
                     reason: "a directory sits inside a sprint containment \
@@ -374,8 +469,18 @@ pub fn scan_tasks(root: &Path) -> Result<Vec<Artifact>, Error> {
 fn sprint_dir_names(root: &Path) -> Result<Vec<String>, Error> {
     let dir = root.join(SPRINTS_DIR);
     let mut names = Vec::new();
-    for name in managed_entries(&dir)? {
-        if !dir.join(&name).is_dir() {
+    for (name, file_type) in managed_entries(&dir)? {
+        if file_type.is_symlink() {
+            return Err(Error::ArtifactConflict {
+                path: dir.join(&name),
+                reason: "a symbolic link occupies a sprint containment \
+                         position; containment directories must be real \
+                         directories, and Strata never follows symbolic \
+                         links inside a repository"
+                    .into(),
+            });
+        }
+        if !file_type.is_dir() {
             return Err(Error::MalformedArtifact {
                 path: dir.join(&name),
                 reason: "the sprints directory holds one containment \
@@ -434,33 +539,61 @@ pub fn resolve<'a>(
     })
 }
 
-/// Non-hidden entry names of one managed directory, in unspecified order.
+/// Refusal for a symlink or other non-regular entry at a canonical
+/// artifact position: such entries are never read and never followed
+/// (thread 4, task 22).
+fn non_regular_entry(path: &Path, file_type: &fs::FileType) -> Error {
+    let what = if file_type.is_symlink() {
+        "symbolic link"
+    } else {
+        "non-regular file"
+    };
+    Error::ArtifactConflict {
+        path: path.to_path_buf(),
+        reason: format!(
+            "a {what} occupies a managed artifact position; artifacts must \
+             be regular files, and Strata never follows symbolic links \
+             inside a repository"
+        ),
+    }
+}
+
+/// Non-hidden entries of one managed directory as `(name, file type)`, in
+/// unspecified order. File types come from the directory entries and never
+/// follow symlinks.
 ///
 /// The repository is defined by its marker alone: Git does not round-trip
 /// empty directories, so a missing managed directory is an empty
-/// collection, not damage. A non-directory object occupying the managed
-/// path is a real conflict. Non-UTF-8 names cannot be artifacts and are
-/// malformed rather than skipped.
-fn managed_entries(dir: &Path) -> Result<Vec<String>, Error> {
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(source) if source.kind() == io::ErrorKind::NotADirectory => {
+/// collection, not damage. The directory itself is classified with
+/// `symlink_metadata`: a symlink or other non-directory object occupying
+/// the managed path is a real conflict, never traversed. Non-UTF-8 names
+/// cannot be artifacts and are malformed rather than skipped.
+fn managed_entries(dir: &Path) -> Result<Vec<(String, fs::FileType)>, Error> {
+    match fs::symlink_metadata(dir) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(meta) => {
             return Err(Error::ArtifactConflict {
                 path: dir.to_path_buf(),
-                reason: "a non-directory object occupies a managed directory \
-                         path; move it aside"
-                    .into(),
+                reason: format!(
+                    "a {} occupies a managed directory path; move it aside",
+                    crate::repo::file_kind(&meta)
+                ),
             });
         }
+        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(source) => {
             return Err(Error::Filesystem {
-                operation: "read directory".into(),
+                operation: "inspect".into(),
                 path: dir.to_path_buf(),
                 source,
             });
         }
-    };
+    }
+    let entries = fs::read_dir(dir).map_err(|source| Error::Filesystem {
+        operation: "read directory".into(),
+        path: dir.to_path_buf(),
+        source,
+    })?;
 
     let mut names = Vec::new();
     for entry in entries {
@@ -479,7 +612,12 @@ fn managed_entries(dir: &Path) -> Result<Vec<String>, Error> {
         if name_str.starts_with('.') {
             continue;
         }
-        names.push(name_str.to_string());
+        let file_type = entry.file_type().map_err(|source| Error::Filesystem {
+            operation: "inspect directory entry".into(),
+            path: dir.join(&name),
+            source,
+        })?;
+        names.push((name_str.to_string(), file_type));
     }
     Ok(names)
 }
@@ -528,17 +666,7 @@ pub(crate) fn parse_artifact_at(
         reason,
     };
 
-    let content = fs::read_to_string(path).map_err(|source| {
-        if source.kind() == io::ErrorKind::InvalidData {
-            malformed("contents are not valid UTF-8".into())
-        } else {
-            Error::Filesystem {
-                operation: "read".into(),
-                path: path.to_path_buf(),
-                source,
-            }
-        }
-    })?;
+    let content = read_artifact_bytes(path)?;
 
     let (front_matter, body) = split_front_matter(&content).ok_or_else(|| {
         malformed(
@@ -1376,6 +1504,191 @@ mod tests {
              \"title\":\"A task\",\"created\":\"2026-07-22\",\"sprint\":\"spr-x\",\
              \"path\":\"archaeology/sprints/0005-x/0017-a-task.md\"}"
         );
+    }
+
+    // --- task 22: the bounded-read seam ---
+
+    #[test]
+    fn read_accepts_a_file_exactly_at_the_byte_limit() {
+        let tmp = temp_repo();
+        let path = tmp.path().join(DRAGONS_DIR).join("0001-cap.md");
+        fs::write(&path, vec![b'a'; MAX_ARTIFACT_BYTES as usize]).unwrap();
+
+        let content = read_artifact_bytes(&path).unwrap();
+
+        assert_eq!(content.len() as u64, MAX_ARTIFACT_BYTES);
+    }
+
+    #[test]
+    fn read_refuses_one_byte_over_the_limit_naming_the_cap() {
+        let tmp = temp_repo();
+        let path = tmp.path().join(DRAGONS_DIR).join("0001-over.md");
+        fs::write(&path, vec![b'a'; MAX_ARTIFACT_BYTES as usize + 1]).unwrap();
+
+        let err = read_artifact_bytes(&path).unwrap_err();
+
+        expect_malformed(err, "0001-over.md", &MAX_ARTIFACT_BYTES.to_string());
+    }
+
+    #[test]
+    fn bounded_invalid_utf8_keeps_the_typed_distinction() {
+        let tmp = temp_repo();
+        let path = tmp.path().join(DRAGONS_DIR).join("0001-latin1.md");
+        fs::write(&path, [b'-', b'-', b'-', b'\n', 0xff, 0xfe]).unwrap();
+
+        let err = read_artifact_bytes(&path).unwrap_err();
+
+        expect_malformed(err, "0001-latin1.md", "not valid UTF-8");
+    }
+
+    #[test]
+    fn oversized_regular_artifact_fails_the_scan_with_the_cap() {
+        // No symlink involved: an oversized committed artifact is the
+        // load-bearing case from thread 4's claim 2.
+        let tmp = temp_repo();
+        let mut content = dragon_markdown("drg-big", 1, "open", "Big");
+        content.push_str(&"x".repeat(MAX_ARTIFACT_BYTES as usize));
+        write_dragon(tmp.path(), DRAGONS_DIR, "0001-big.md", &content);
+
+        let err = scan(tmp.path(), &DRAGON).unwrap_err();
+
+        expect_malformed(err, "0001-big.md", &MAX_ARTIFACT_BYTES.to_string());
+    }
+
+    // --- task 22: symlinks are classified, refused, and never followed ---
+
+    #[cfg(unix)]
+    mod symlink_boundary {
+        use super::*;
+        use std::os::unix::fs::symlink;
+
+        fn expect_symlink_conflict(err: Error, name: &str) {
+            match err {
+                Error::ArtifactConflict { path, reason } => {
+                    assert!(
+                        path.ends_with(name),
+                        "expected path ending {name}: {path:?}"
+                    );
+                    assert!(reason.contains("symbolic link"), "{reason}");
+                }
+                other => panic!("expected artifact conflict, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn file_symlink_at_a_flat_artifact_position_is_refused_unread() {
+            let tmp = temp_repo();
+            let outside = tempfile::tempdir().unwrap();
+            let target = outside.path().join("outside.md");
+            fs::write(
+                &target,
+                dragon_markdown("drg-outside", 2, "open", "Outside"),
+            )
+            .unwrap();
+            symlink(&target, tmp.path().join(DRAGONS_DIR).join("0002-evil.md")).unwrap();
+
+            let err = scan(tmp.path(), &DRAGON).unwrap_err();
+
+            // The scan refuses before any read, so the outside content
+            // can never reach a projection.
+            expect_symlink_conflict(err, "0002-evil.md");
+        }
+
+        #[test]
+        fn directory_symlink_at_a_flat_artifact_position_remains_a_conflict() {
+            let tmp = temp_repo();
+            symlink(
+                tmp.path().join("archaeology"),
+                tmp.path().join(DRAGONS_DIR).join("loop"),
+            )
+            .unwrap();
+
+            let err = scan(tmp.path(), &DRAGON).unwrap_err();
+
+            expect_symlink_conflict(err, "loop");
+        }
+
+        #[test]
+        fn symlinked_managed_directory_is_a_conflict_never_traversed() {
+            let tmp = temp_repo();
+            let outside = tempfile::tempdir().unwrap();
+            fs::write(
+                outside.path().join("0001-planted.md"),
+                dragon_markdown("drg-planted", 1, "open", "Planted"),
+            )
+            .unwrap();
+            fs::remove_dir(tmp.path().join(DRAGONS_DIR)).unwrap();
+            symlink(outside.path(), tmp.path().join(DRAGONS_DIR)).unwrap();
+
+            let err = scan(tmp.path(), &DRAGON).unwrap_err();
+
+            expect_symlink_conflict(err, DRAGONS_DIR);
+        }
+
+        #[test]
+        fn symlinked_sprint_containment_directory_is_refused() {
+            let tmp = temp_repo();
+            let outside = tempfile::tempdir().unwrap();
+            fs::write(
+                outside.path().join(crate::repo::SPRINT_FILE),
+                "---\nid: spr-evil\nsequence: 1\nkind: sprint\nstatus: active\ncreated: 2026-07-20\n---\n\n# Evil\n",
+            )
+            .unwrap();
+            fs::create_dir_all(tmp.path().join(SPRINTS_DIR)).unwrap();
+            symlink(
+                outside.path(),
+                tmp.path().join(SPRINTS_DIR).join("0001-evil"),
+            )
+            .unwrap();
+
+            let err = scan_sprints(tmp.path()).unwrap_err();
+
+            expect_symlink_conflict(err, "0001-evil");
+        }
+
+        #[test]
+        fn symlinked_sprint_file_is_refused() {
+            let tmp = temp_repo();
+            let outside = tempfile::tempdir().unwrap();
+            let target = outside.path().join("sprint.md");
+            fs::write(
+                &target,
+                "---\nid: spr-evil\nsequence: 1\nkind: sprint\nstatus: active\ncreated: 2026-07-20\n---\n\n# Evil\n",
+            )
+            .unwrap();
+            let dir = tmp.path().join(SPRINTS_DIR).join("0001-hollow");
+            fs::create_dir_all(&dir).unwrap();
+            symlink(&target, dir.join(crate::repo::SPRINT_FILE)).unwrap();
+
+            let err = scan_sprints(tmp.path()).unwrap_err();
+
+            expect_symlink_conflict(err, "sprint.md");
+        }
+
+        #[test]
+        fn symlinked_task_file_is_refused() {
+            let tmp = temp_repo();
+            seed_sprint(tmp.path(), "0001-first", 1, "active");
+            let outside = tempfile::tempdir().unwrap();
+            let target = outside.path().join("task.md");
+            fs::write(
+                &target,
+                "---\nid: tsk-evil\nsequence: 1\nkind: task\nstatus: pending\nsprint: spr-1\ncreated: 2026-07-20\n---\n\n# Evil\n",
+            )
+            .unwrap();
+            symlink(
+                &target,
+                tmp.path()
+                    .join(SPRINTS_DIR)
+                    .join("0001-first")
+                    .join("0001-evil.md"),
+            )
+            .unwrap();
+
+            let err = scan_tasks(tmp.path()).unwrap_err();
+
+            expect_symlink_conflict(err, "0001-evil.md");
+        }
     }
 
     #[test]

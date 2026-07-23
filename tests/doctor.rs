@@ -178,6 +178,74 @@ fn dangling_provenance_edges_are_corruption() {
 }
 
 #[test]
+fn oversized_artifact_is_refused_by_strict_reads_and_reported_by_doctor() {
+    // Task 22: the per-file read bound, at the adjudicated error boundary —
+    // strict commands refuse with `malformed-artifact`, doctor reports the
+    // same state as a finding, and `--json` changes neither.
+    let tmp = init_repo();
+    let mut oversized = dragon_markdown("drg-big", 1, "open", "Big");
+    oversized.push_str(&"x".repeat(1024 * 1024));
+    fs::write(tmp.path().join(DRAGONS_DIR).join("0001-big.md"), &oversized).unwrap();
+
+    let list = strata_in(tmp.path(), &["list", "dragons"]);
+    assert_eq!(list.status.code(), Some(5), "{}", stderr(&list));
+    assert!(
+        stderr(&list).starts_with("error[malformed-artifact]: "),
+        "{}",
+        stderr(&list)
+    );
+
+    let list_json = strata_in(tmp.path(), &["list", "dragons", "--json"]);
+    assert_eq!(list_json.status.code(), Some(5), "{}", stderr(&list_json));
+    assert_eq!(
+        stderr(&list_json),
+        stderr(&list),
+        "human and JSON callers must see the same typed refusal"
+    );
+
+    let doctor = strata_in(tmp.path(), &["doctor"]);
+    assert_eq!(doctor.status.code(), Some(9), "{}", stderr(&doctor));
+    assert!(
+        stdout(&doctor).contains("malformed-artifact"),
+        "{}",
+        stdout(&doctor)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_artifact_is_refused_by_strict_reads_and_reported_by_doctor() {
+    let tmp = init_repo();
+    let outside = tempfile::tempdir().unwrap();
+    let target = outside.path().join("outside.md");
+    fs::write(
+        &target,
+        dragon_markdown("drg-outside", 1, "open", "Outside"),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(&target, tmp.path().join(DRAGONS_DIR).join("0001-evil.md")).unwrap();
+
+    let list = strata_in(tmp.path(), &["list", "dragons"]);
+    assert_eq!(list.status.code(), Some(4), "{}", stderr(&list));
+    assert!(
+        stderr(&list).starts_with("error[artifact-conflict]: "),
+        "{}",
+        stderr(&list)
+    );
+    assert!(
+        !stdout(&list).contains("Outside"),
+        "outside content must never reach a projection: {}",
+        stdout(&list)
+    );
+
+    let doctor = strata_in(tmp.path(), &["doctor", "--json"]);
+    assert_eq!(doctor.status.code(), Some(9), "{}", stderr(&doctor));
+    let findings: serde_json::Value = serde_json::from_str(stdout(&doctor).trim()).unwrap();
+    assert_eq!(findings[0]["problem"], "artifact-conflict");
+    assert_eq!(findings[0]["path"], "archaeology/dragons/0001-evil.md");
+}
+
+#[test]
 fn doctor_outside_a_repository_is_a_missing_repository_error() {
     let tmp = tempfile::tempdir().unwrap();
 

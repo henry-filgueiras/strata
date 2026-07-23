@@ -80,11 +80,7 @@ pub fn init(root: &Path) -> Result<InitReport, Error> {
     let config_path = root.join(CONFIG_FILE);
     let config_missing = match fs::symlink_metadata(&config_path) {
         Ok(meta) if meta.is_file() => {
-            let content = fs::read_to_string(&config_path).map_err(|source| Error::Filesystem {
-                operation: "read".into(),
-                path: config_path.clone(),
-                source,
-            })?;
+            let content = read_config(&config_path)?;
             validate_config(&content).map_err(|reason| Error::MalformedArtifact {
                 path: config_path.clone(),
                 reason,
@@ -141,12 +137,7 @@ pub fn discover(start: &Path) -> Result<PathBuf, Error> {
         let config_path = dir.join(CONFIG_FILE);
         match fs::symlink_metadata(&config_path) {
             Ok(meta) if meta.is_file() => {
-                let content =
-                    fs::read_to_string(&config_path).map_err(|source| Error::Filesystem {
-                        operation: "read".into(),
-                        path: config_path.clone(),
-                        source,
-                    })?;
+                let content = read_config(&config_path)?;
                 validate_config(&content).map_err(|reason| Error::MalformedArtifact {
                     path: config_path,
                     reason,
@@ -280,7 +271,31 @@ fn write_config(root: &Path, config_path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-fn file_kind(meta: &fs::Metadata) -> &'static str {
+/// Read the config marker through the bounded seam: the marker is
+/// repository-controlled content like any artifact, so the task 22
+/// per-file cap applies to it too. Callers have already classified the
+/// path as a regular file with `symlink_metadata`.
+fn read_config(path: &Path) -> Result<String, Error> {
+    let bytes = crate::read::read_capped(path)
+        .map_err(|source| Error::Filesystem {
+            operation: "read".into(),
+            path: path.to_path_buf(),
+            source,
+        })?
+        .ok_or_else(|| Error::MalformedArtifact {
+            path: path.to_path_buf(),
+            reason: format!(
+                "file exceeds the {}-byte per-file read limit",
+                crate::read::MAX_ARTIFACT_BYTES
+            ),
+        })?;
+    String::from_utf8(bytes).map_err(|_| Error::MalformedArtifact {
+        path: path.to_path_buf(),
+        reason: "contents are not valid UTF-8".into(),
+    })
+}
+
+pub(crate) fn file_kind(meta: &fs::Metadata) -> &'static str {
     let file_type = meta.file_type();
     if file_type.is_dir() {
         "directory"

@@ -2,9 +2,10 @@
 id: tsk_01KY61X8H0QY2FZN4JSNP519A8
 sequence: 22
 kind: task
-status: pending
+status: closed
 sprint: spr_01KY61D615FAC8VVSTD7QXX1DW
 created: 2026-07-22
+closed: 2026-07-22
 ---
 
 # Enforce the canonical-position filesystem boundary
@@ -89,3 +90,59 @@ payload load is ever introduced, the bound and the symlink refusal
 apply at that second read site too.
 
 ## Result
+
+One bounded-read seam now fronts every production content read:
+`read::read_capped` pulls at most `MAX_ARTIFACT_BYTES + 1` bytes through
+`File::take`, and `read::read_artifact_bytes` wraps it with a
+`symlink_metadata` regular-file check, the oversized refusal, and the
+preserved invalid-UTF-8 distinction. `MAX_ARTIFACT_BYTES` is 1 MiB
+(1,048,576 bytes), recorded with its rationale on the constant: ~40× the
+largest real artifact, small enough that one hostile file cannot exhaust
+memory. The bounded `take` — not any metadata inspection — is the
+enforcement, so the cap holds even when a file grows after being
+classified, and an oversized payload is never fully allocated. A file
+exactly at the cap parses; one byte over is a typed `malformed-artifact`
+naming the path and the cap, surfaced identically to human and `--json`
+callers (errors are stderr-only) and as a doctor finding rather than an
+abort.
+
+Every canonical position is classified without following symlinks: the
+flat scanners and `read::managed_entries` (which also classifies the
+managed directory itself), the sprint containment and `sprint.md`
+checks, the task scanners, doctor's parallel walks (refusals become
+`artifact-conflict` findings; the run continues), and
+`edges::harvest`, which no longer descends symlinked directories or
+reads symlinked files — an identity reachable only through a link stays
+out of the verification universe, so the thread's forged-provenance
+shape now reports `dangling-edge`. Not following links also removes the
+loop tail: no visited-set or canonicalization is needed, and no claim of
+race-free confinement against concurrent replacement is made. The
+audit of production reads also routed the `.strata.toml` marker read
+through the same capped primitive; the one intentional exclusion is
+sequence allocation (`max_sequence_in`), which reads filenames only —
+zero content bytes — and stays content-blind per the recorded thread 6
+case G seam owned by task 27.
+
+Affected command surfaces: every artifact-reading command inherits the
+seam — `list`, `show`, `new` (scan-based sequence allocation for
+sprints/tasks), `close`/`reopen`/`adopt`/`reject` (resolution and
+bind-time harvest), `fortune`, and `doctor`.
+
+Regression coverage (all finite; symlink construction unix-gated):
+exact-cap acceptance, one-byte-over refusal naming the cap, bounded
+invalid UTF-8, an oversized regular artifact through scan and doctor,
+file- and directory-symlinks at flat positions, a symlinked managed
+directory, symlinked containment directories, `sprint.md`, and task
+files (scan errors and doctor findings agree), harvest refusing
+symlinked directories/files, ancestor-loop and symlinked-root
+tolerance, harvest skipping oversized files while retaining all
+duplicate claimants, the claim 4 external-identity edge now dangling,
+and CLI-level strict/doctor/`--json` agreement.
+
+Retained limitations and handoffs: the cap is per-file only — a strict
+scan may still retain up to N × cap across N valid artifacts; the
+aggregate-retention seam stays deferred per thread 8 on idea 18. The
+harvest retains every claimant in deterministic order; the first-wins
+collapse survives only inside `harvest_ids` at its single caller
+boundary, explicitly marked as task 23's replacement point. Identity
+resolution policy is unchanged here.

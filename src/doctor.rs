@@ -207,29 +207,9 @@ fn scan_dir(
 ) -> Result<(), Error> {
     let dir_rel = collection.dir;
     let dir = root.join(dir_rel);
-    let entries = match fs::read_dir(&dir) {
-        Ok(entries) => entries,
-        // A missing managed directory is an empty collection (decision 5):
-        // Git does not round-trip empty directories.
-        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(source) if source.kind() == io::ErrorKind::NotADirectory => {
-            findings.push(Finding {
-                problem: "artifact-conflict",
-                path: dir_rel.into(),
-                detail: "a non-directory object occupies this managed directory path; \
-                         move it aside"
-                    .into(),
-                severity: Severity::Error,
-            });
-            return Ok(());
-        }
-        Err(source) => {
-            return Err(Error::Filesystem {
-                operation: "read directory".into(),
-                path: dir,
-                source,
-            });
-        }
+    let entries = match managed_dir_entries(&dir, dir_rel, findings)? {
+        Some(entries) => entries,
+        None => return Ok(()),
     };
 
     for entry in entries {
@@ -251,8 +231,20 @@ fn scan_dir(
         if name_str.starts_with('.') {
             continue;
         }
+        let file_type = entry.file_type().map_err(|source| Error::Filesystem {
+            operation: "inspect directory entry".into(),
+            path: dir.join(name_str),
+            source,
+        })?;
         let path = dir.join(name_str);
-        if path.is_dir() {
+        if file_type.is_symlink() || !(file_type.is_file() || file_type.is_dir()) {
+            findings.push(non_regular_finding(
+                format!("{dir_rel}/{name_str}"),
+                &file_type,
+            ));
+            continue;
+        }
+        if file_type.is_dir() {
             findings.push(Finding {
                 problem: "artifact-conflict",
                 path: format!("{dir_rel}/{name_str}"),
@@ -272,6 +264,69 @@ fn scan_dir(
     Ok(())
 }
 
+/// Open one managed directory for a diagnosis walk, classifying the
+/// directory itself without following symlinks. `None` means the walk has
+/// nothing to do: the directory is missing (an empty collection, decision
+/// 5) or its path is occupied by a non-directory object — including a
+/// symlink, never traversed — which is recorded as a conflict finding.
+fn managed_dir_entries(
+    dir: &Path,
+    dir_rel: &str,
+    findings: &mut Vec<Finding>,
+) -> Result<Option<fs::ReadDir>, Error> {
+    match fs::symlink_metadata(dir) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(meta) => {
+            findings.push(Finding {
+                problem: "artifact-conflict",
+                path: dir_rel.into(),
+                detail: format!(
+                    "a {} occupies this managed directory path; move it aside",
+                    crate::repo::file_kind(&meta)
+                ),
+                severity: Severity::Error,
+            });
+            return Ok(None);
+        }
+        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(Error::Filesystem {
+                operation: "inspect".into(),
+                path: dir.to_path_buf(),
+                source,
+            });
+        }
+    }
+    fs::read_dir(dir)
+        .map(Some)
+        .map_err(|source| Error::Filesystem {
+            operation: "read directory".into(),
+            path: dir.to_path_buf(),
+            source,
+        })
+}
+
+/// Conflict finding for a symlink or other non-regular entry at a
+/// canonical artifact position (thread 4, task 22): surfaced as
+/// corruption, never read or followed.
+fn non_regular_finding(path: String, file_type: &fs::FileType) -> Finding {
+    let what = if file_type.is_symlink() {
+        "symbolic link"
+    } else {
+        "non-regular file"
+    };
+    Finding {
+        problem: "artifact-conflict",
+        path,
+        detail: format!(
+            "a {what} occupies a managed artifact position; artifacts must \
+             be regular files, and Strata never follows symbolic links \
+             inside a repository"
+        ),
+        severity: Severity::Error,
+    }
+}
+
 /// Walk the sprints directory, collecting per-sprint findings and cleanly
 /// parsed sprint artifacts. Containment directories that fail structural
 /// expectations (a loose file, a malformed `NNNN-slug` name, a missing
@@ -284,27 +339,9 @@ fn scan_sprints_dir(
 ) -> Result<(), Error> {
     let dir_rel = crate::repo::SPRINTS_DIR;
     let dir = root.join(dir_rel);
-    let entries = match fs::read_dir(&dir) {
-        Ok(entries) => entries,
-        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(source) if source.kind() == io::ErrorKind::NotADirectory => {
-            findings.push(Finding {
-                problem: "artifact-conflict",
-                path: dir_rel.into(),
-                detail: "a non-directory object occupies this managed directory path; \
-                         move it aside"
-                    .into(),
-                severity: Severity::Error,
-            });
-            return Ok(());
-        }
-        Err(source) => {
-            return Err(Error::Filesystem {
-                operation: "read directory".into(),
-                path: dir,
-                source,
-            });
-        }
+    let entries = match managed_dir_entries(&dir, dir_rel, findings)? {
+        Some(entries) => entries,
+        None => return Ok(()),
     };
 
     for entry in entries {
@@ -326,9 +363,27 @@ fn scan_sprints_dir(
         if name_str.starts_with('.') {
             continue;
         }
+        let file_type = entry.file_type().map_err(|source| Error::Filesystem {
+            operation: "inspect directory entry".into(),
+            path: dir.join(name_str),
+            source,
+        })?;
         let sprint_dir = dir.join(name_str);
         let sprint_dir_rel = format!("{dir_rel}/{name_str}");
-        if !sprint_dir.is_dir() {
+        if file_type.is_symlink() {
+            findings.push(Finding {
+                problem: "artifact-conflict",
+                path: sprint_dir_rel,
+                detail: "a symbolic link occupies a sprint containment \
+                         position; containment directories must be real \
+                         directories, and Strata never follows symbolic \
+                         links inside a repository"
+                    .into(),
+                severity: Severity::Error,
+            });
+            continue;
+        }
+        if !file_type.is_dir() {
             findings.push(Finding {
                 problem: "malformed-artifact",
                 path: sprint_dir_rel,
@@ -352,17 +407,24 @@ fn scan_sprints_dir(
         };
         let file = sprint_dir.join(crate::repo::SPRINT_FILE);
         let file_rel = format!("{sprint_dir_rel}/{}", crate::repo::SPRINT_FILE);
-        if !file.is_file() {
-            findings.push(Finding {
-                problem: "malformed-artifact",
-                path: sprint_dir_rel,
-                detail: format!(
-                    "sprint containment directories must hold a `{}` artifact",
-                    crate::repo::SPRINT_FILE
-                ),
-                severity: Severity::Error,
-            });
-            continue;
+        match fs::symlink_metadata(&file) {
+            Ok(meta) if meta.is_file() => {}
+            Ok(meta) if meta.file_type().is_symlink() => {
+                findings.push(non_regular_finding(file_rel, &meta.file_type()));
+                continue;
+            }
+            Ok(_) | Err(_) => {
+                findings.push(Finding {
+                    problem: "malformed-artifact",
+                    path: sprint_dir_rel,
+                    detail: format!(
+                        "sprint containment directories must hold a `{}` artifact",
+                        crate::repo::SPRINT_FILE
+                    ),
+                    severity: Severity::Error,
+                });
+                continue;
+            }
         }
         match read::parse_artifact_at(
             &file,
@@ -403,8 +465,12 @@ fn scan_task_dirs(
         let Some(dir_name) = name.to_str() else {
             continue;
         };
+        // Classified from the entry itself, so a symlinked containment
+        // directory is skipped here (never followed); it is already
+        // reported as a conflict by `scan_sprints_dir`.
+        let is_real_dir = entry.file_type().is_ok_and(|file_type| file_type.is_dir());
         if dir_name.starts_with('.')
-            || !entry.path().is_dir()
+            || !is_real_dir
             || crate::artifact::parse_dir_sequence(dir_name).is_none()
         {
             continue;
@@ -434,8 +500,20 @@ fn scan_task_dirs(
             if task_name.starts_with('.') || task_name == crate::repo::SPRINT_FILE {
                 continue;
             }
+            let file_type = task_entry.file_type().map_err(|source| Error::Filesystem {
+                operation: "inspect directory entry".into(),
+                path: dir.join(task_name),
+                source,
+            })?;
             let path = dir.join(task_name);
-            if path.is_dir() {
+            if file_type.is_symlink() || !(file_type.is_file() || file_type.is_dir()) {
+                findings.push(non_regular_finding(
+                    format!("{dir_rel}/{task_name}"),
+                    &file_type,
+                ));
+                continue;
+            }
+            if file_type.is_dir() {
                 findings.push(Finding {
                     problem: "artifact-conflict",
                     path: format!("{dir_rel}/{task_name}"),
@@ -466,6 +544,14 @@ fn finding_at(error: Error, path: String) -> Finding {
     match error {
         Error::MalformedArtifact { reason, .. } => Finding {
             problem: "malformed-artifact",
+            path,
+            detail: reason,
+            severity: Severity::Error,
+        },
+        // The bounded-read seam's non-regular backstop (task 22): keep the
+        // finding vocabulary aligned with the scanners' walk-time refusal.
+        Error::ArtifactConflict { reason, .. } => Finding {
+            problem: "artifact-conflict",
             path,
             detail: reason,
             severity: Severity::Error,
@@ -1114,6 +1200,206 @@ mod tests {
             "{}",
             report.findings[0].detail
         );
+    }
+
+    #[test]
+    fn oversized_artifact_is_a_bounded_read_finding_not_an_abort() {
+        let tmp = temp_repo();
+        write_dragon(
+            tmp.path(),
+            DRAGONS_DIR,
+            "0001-fine.md",
+            &dragon_markdown("id-1", 1, "open", "Fine"),
+        );
+        let mut oversized = dragon_markdown("id-2", 2, "open", "Big");
+        oversized.push_str(&"x".repeat(crate::read::MAX_ARTIFACT_BYTES as usize));
+        write_dragon(tmp.path(), DRAGONS_DIR, "0002-big.md", &oversized);
+
+        let report = check(tmp.path()).unwrap();
+
+        assert_eq!(report.artifacts_checked, 1);
+        assert_eq!(
+            problems(&report),
+            vec![("malformed-artifact", "archaeology/dragons/0002-big.md")]
+        );
+        assert!(
+            report.findings[0]
+                .detail
+                .contains(&crate::read::MAX_ARTIFACT_BYTES.to_string()),
+            "the finding must name the cap: {}",
+            report.findings[0].detail
+        );
+    }
+
+    #[cfg(unix)]
+    mod symlink_boundary {
+        use super::*;
+        use std::os::unix::fs::symlink;
+
+        #[test]
+        fn symlinked_artifact_position_is_a_conflict_finding_not_fatal() {
+            let tmp = temp_repo();
+            write_dragon(
+                tmp.path(),
+                DRAGONS_DIR,
+                "0001-fine.md",
+                &dragon_markdown("id-1", 1, "open", "Fine"),
+            );
+            let outside = tempfile::tempdir().unwrap();
+            let target = outside.path().join("outside.md");
+            fs::write(
+                &target,
+                dragon_markdown("drg-outside", 2, "open", "Outside"),
+            )
+            .unwrap();
+            symlink(&target, tmp.path().join(DRAGONS_DIR).join("0002-evil.md")).unwrap();
+
+            let report = check(tmp.path()).unwrap();
+
+            assert_eq!(report.artifacts_checked, 1);
+            assert_eq!(
+                problems(&report),
+                vec![("artifact-conflict", "archaeology/dragons/0002-evil.md")]
+            );
+            assert!(
+                report.findings[0].detail.contains("symbolic link"),
+                "{}",
+                report.findings[0].detail
+            );
+        }
+
+        #[test]
+        fn symlinked_managed_directory_is_a_conflict_finding() {
+            let tmp = temp_repo();
+            let outside = tempfile::tempdir().unwrap();
+            fs::write(
+                outside.path().join("0001-planted.md"),
+                dragon_markdown("drg-planted", 1, "open", "Planted"),
+            )
+            .unwrap();
+            fs::remove_dir(tmp.path().join(DRAGONS_DIR)).unwrap();
+            symlink(outside.path(), tmp.path().join(DRAGONS_DIR)).unwrap();
+
+            let report = check(tmp.path()).unwrap();
+
+            assert_eq!(report.artifacts_checked, 0);
+            assert_eq!(problems(&report), vec![("artifact-conflict", DRAGONS_DIR)]);
+            assert!(
+                report.findings[0].detail.contains("symbolic link"),
+                "{}",
+                report.findings[0].detail
+            );
+        }
+
+        #[test]
+        fn symlinked_containment_directory_and_sprint_file_are_findings() {
+            let tmp = temp_repo();
+            seed_sprint(tmp.path(), "0001-real", 1, "closed");
+            // A symlinked containment directory.
+            let outside = tempfile::tempdir().unwrap();
+            let external_sprint = outside.path().join("sprint-tree");
+            fs::create_dir_all(&external_sprint).unwrap();
+            fs::write(
+                external_sprint.join(crate::repo::SPRINT_FILE),
+                "---\nid: spr-evil\nsequence: 2\nkind: sprint\nstatus: active\ncreated: 2026-07-20\n---\n\n# Evil\n",
+            )
+            .unwrap();
+            symlink(
+                &external_sprint,
+                tmp.path().join(crate::repo::SPRINTS_DIR).join("0002-evil"),
+            )
+            .unwrap();
+            // A real containment directory whose sprint.md is a symlink.
+            let hollow = tmp
+                .path()
+                .join(crate::repo::SPRINTS_DIR)
+                .join("0003-hollow");
+            fs::create_dir_all(&hollow).unwrap();
+            symlink(
+                external_sprint.join(crate::repo::SPRINT_FILE),
+                hollow.join(crate::repo::SPRINT_FILE),
+            )
+            .unwrap();
+
+            let report = check(tmp.path()).unwrap();
+
+            assert_eq!(report.artifacts_checked, 1, "{:?}", report.findings);
+            assert_eq!(
+                problems(&report),
+                vec![
+                    ("artifact-conflict", "archaeology/sprints/0002-evil"),
+                    (
+                        "artifact-conflict",
+                        "archaeology/sprints/0003-hollow/sprint.md"
+                    ),
+                ]
+            );
+        }
+
+        #[test]
+        fn symlinked_task_file_is_a_conflict_finding() {
+            let tmp = temp_repo();
+            seed_sprint(tmp.path(), "0001-real", 1, "active");
+            let outside = tempfile::tempdir().unwrap();
+            let target = outside.path().join("task.md");
+            fs::write(
+                &target,
+                "---\nid: tsk-evil\nsequence: 1\nkind: task\nstatus: pending\nsprint: spr-1\ncreated: 2026-07-20\n---\n\n# Evil\n",
+            )
+            .unwrap();
+            symlink(
+                &target,
+                tmp.path()
+                    .join(crate::repo::SPRINTS_DIR)
+                    .join("0001-real")
+                    .join("0001-evil.md"),
+            )
+            .unwrap();
+
+            let report = check(tmp.path()).unwrap();
+
+            assert_eq!(report.artifacts_checked, 1);
+            assert_eq!(
+                problems(&report),
+                vec![(
+                    "artifact-conflict",
+                    "archaeology/sprints/0001-real/0001-evil.md"
+                )]
+            );
+        }
+
+        #[test]
+        fn external_identity_via_directory_symlink_no_longer_satisfies_edges() {
+            // Thread 4 claim 4: without the symlink the edge dangles; with
+            // it, the pre-repair harvest blessed the forged provenance.
+            // Post-repair both states report `dangling-edge`.
+            let tmp = temp_repo();
+            let outside = tempfile::tempdir().unwrap();
+            let external = outside.path().join("external-arch");
+            fs::create_dir_all(&external).unwrap();
+            fs::write(
+                external.join("0001-authority.md"),
+                "---\nid: dec-external-authority\nsequence: 1\nkind: decision\nstatus: accepted\ncreated: 2026-07-20\n---\n\n# External authority\n",
+            )
+            .unwrap();
+            symlink(&external, tmp.path().join("archaeology/imported")).unwrap();
+            write_dragon(
+                tmp.path(),
+                DRAGONS_DIR,
+                "0001-settled.md",
+                &closed_dragon_with_edge(
+                    "resolved-by: \"[[dec-external-authority|external authority]]\"",
+                ),
+            );
+
+            let report = check(tmp.path()).unwrap();
+
+            assert!(!report.healthy());
+            assert_eq!(
+                problems(&report),
+                vec![("dangling-edge", "archaeology/dragons/0001-settled.md")]
+            );
+        }
     }
 
     #[test]

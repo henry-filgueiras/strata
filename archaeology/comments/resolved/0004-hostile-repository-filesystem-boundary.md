@@ -2,8 +2,9 @@
 id: cmt-s5-hostile-repository-boundary
 sequence: 4
 kind: comment-thread
-status: open
+status: resolved
 created: 2026-07-22
+resolved: 2026-07-22
 comments-on: spr-placement-and-sprints
 review:
   gate: blocking
@@ -174,3 +175,62 @@ surfacing refusals as findings rather than aborting; and finite-probe
 regression tests for each boundary. Per the stop-the-line protocol, no
 production code is changed here — this thread stays **open and
 blocking** until the repair lands and is verified.
+
+## cme-hostile-repository-remediation-verification-1
+
+- author: agent, Anthropic, as "Claude"
+- created: 2026-07-22
+
+### Implemented repair
+
+Task 22 landed one bounded-read seam and a non-following walk.
+`read::read_capped` enforces `MAX_ARTIFACT_BYTES` (1 MiB) by pulling at
+most cap + 1 bytes through `File::take` — the read itself is the
+boundary, so the cap holds even against a file that grows after being
+classified, and an oversized payload is never fully allocated.
+`read::read_artifact_bytes` fronts it with a `symlink_metadata`
+regular-file refusal and preserves the invalid-UTF-8 distinction; every
+production content read (strict parsers, doctor, the archaeology
+harvest, and the config marker) goes through it. Every canonical
+position — flat entries, containment directories, `sprint.md`, task
+files, and the managed directories themselves — is classified from
+non-following directory-entry file types or `symlink_metadata`;
+symlinks and other non-regular entries are refused as
+`artifact-conflict` in strict reads and surfaced as findings by
+`doctor`, which keeps scanning. The harvest never descends a symlinked
+directory or reads a symlinked file, which also retires the claim 3
+loop tail without a visited-set. No canonicalization was added and no
+race-free-confinement claim is made.
+
+### Post-remediation evidence
+
+| Accepted finding | Regression or static evidence | Result |
+| --- | --- | --- |
+| Unbounded per-file read (claim 2) | `read_accepts_a_file_exactly_at_the_byte_limit`, `read_refuses_one_byte_over_the_limit_naming_the_cap`, `oversized_regular_artifact_fails_the_scan_with_the_cap`, doctor's `oversized_artifact_is_a_bounded_read_finding_not_an_abort`, CLI `oversized_artifact_is_refused_by_strict_reads_and_reported_by_doctor` (human and `--json` refusals identical); `bounded_invalid_utf8_keeps_the_typed_distinction` | remediated |
+| Symlinked managed file (claim 1) | `file_symlink_at_a_flat_artifact_position_is_refused_unread`, `symlinked_sprint_file_is_refused`, `symlinked_task_file_is_refused`, doctor twins, CLI `symlinked_artifact_is_refused_by_strict_reads_and_reported_by_doctor` — outside content never reaches a projection | remediated |
+| Symlinked containment or traversal path (claims 3, 4 surface) | `symlinked_sprint_containment_directory_is_refused`, `symlinked_managed_directory_is_a_conflict_never_traversed`, `directory_symlink_at_a_flat_artifact_position_remains_a_conflict` (still `artifact-conflict`), `harvest_ignores_ancestor_loops_without_a_visited_set` | remediated |
+| Unbounded recursive harvest (claims 2, 4) | `harvest_never_descends_a_symlinked_directory`, `harvest_never_reads_a_symlinked_file`, `harvest_ignores_a_symlinked_archaeology_root`, `harvest_skips_oversized_files_through_the_bounded_seam`, and this thread's claim 4 shape re-probed: `external_identity_via_directory_symlink_no_longer_satisfies_edges` reports `dangling-edge` exactly as if the symlink were absent | remediated |
+
+All probes are finite temporary-repository shapes; symlink construction
+is unix-gated. Full suite, `strata doctor` (60 artifacts, healthy), and
+`scripts/check.sh` are green.
+
+### Preserved boundaries
+
+- Aggregate eager retention remains deferred to thread 8 and idea 18:
+  the cap is per-file, and a strict scan may still retain N × cap.
+- Duplicate-claimant and first-wins resolution remain owned by task 23:
+  the harvest retains every claimant in deterministic order
+  (`harvest_retains_every_claimant_while_harvest_ids_collapses`), and
+  the first-wins collapse survives only in `harvest_ids` at its single
+  caller boundary, marked as task 23's replacement point.
+- Representation and degraded-operability policy remain owned by tasks
+  25 and 27; sequence allocation stays filename-only and content-blind
+  per the thread 6 case G seam.
+
+### Final disposition
+
+Technical disposition: accepted and remediated.
+
+Gate disposition: resolved; task 22's implementation and verification
+satisfy this thread's blocking consequence.

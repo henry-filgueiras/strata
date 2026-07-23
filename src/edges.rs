@@ -259,28 +259,51 @@ pub(crate) struct Harvested {
 /// reference resolve to", not "is this file valid". Traversal is sorted
 /// so duplicates surface deterministically; duplicate ids among managed
 /// artifacts are separately real findings.
+///
+/// The walk honors the task 22 filesystem boundary: every entry is
+/// classified without following symlinks, so a symlinked directory is
+/// never descended and a symlinked file is never read — an identity
+/// reachable only through a link stays outside the verification universe,
+/// and traversal cycles are impossible without canonicalization. Reads go
+/// through the bounded [`crate::read::read_artifact_bytes`] seam;
+/// oversized files are skipped like any other unharvestable content.
 pub(crate) fn harvest(root: &Path) -> Vec<Harvested> {
     let mut harvested = Vec::new();
-    let mut stack = vec![root.join("archaeology")];
+    let archaeology = root.join("archaeology");
+    let is_real_dir = fs::symlink_metadata(&archaeology)
+        .map(|meta| meta.is_dir())
+        .unwrap_or(false);
+    if !is_real_dir {
+        return harvested;
+    }
+    let mut stack = vec![archaeology];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = fs::read_dir(&dir) else {
             continue;
         };
-        let mut paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
-        paths.sort();
-        for path in paths {
+        let mut paths: Vec<(PathBuf, fs::FileType)> = entries
+            .flatten()
+            .filter_map(|entry| {
+                entry
+                    .file_type()
+                    .ok()
+                    .map(|file_type| (entry.path(), file_type))
+            })
+            .collect();
+        paths.sort_by(|a, b| a.0.cmp(&b.0));
+        for (path, file_type) in paths {
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name.starts_with('.') {
+            if name.starts_with('.') || file_type.is_symlink() {
                 continue;
             }
-            if path.is_dir() {
+            if file_type.is_dir() {
                 stack.push(path);
                 continue;
             }
-            if !name.ends_with(".md") {
+            if !file_type.is_file() || !name.ends_with(".md") {
                 continue;
             }
-            let Ok(content) = fs::read_to_string(&path) else {
+            let Ok(content) = crate::read::read_artifact_bytes(&path) else {
                 continue;
             };
             let Some((front_matter, body)) = crate::read::split_front_matter(&content) else {
@@ -315,6 +338,11 @@ pub(crate) fn harvest(root: &Path) -> Vec<Harvested> {
 
 /// The typed-edge verification universe: every harvested id mapped to its
 /// kind, first-seen deterministically.
+///
+/// This first-wins collapse is a compatibility boundary kept at this one
+/// caller seam: the underlying [`harvest`] retains every claimant, and
+/// replacing first-wins resolution with an ambiguity-aware catalog is
+/// task 23's charter, not this function's.
 pub(crate) fn harvest_ids(root: &Path) -> BTreeMap<String, String> {
     let mut universe = BTreeMap::new();
     for artifact in harvest(root) {
@@ -376,6 +404,168 @@ mod tests {
             "[[dec-x|line\nbreak]]", // markers are one line
         ] {
             assert_eq!(parse_marker(bad), None, "must reject {bad:?}");
+        }
+    }
+
+    fn seed_md(root: &Path, rel_dir: &str, name: &str, id: &str, kind: &str) {
+        let dir = root.join(rel_dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(name),
+            format!(
+                "---\nid: {id}\nsequence: 1\nkind: {kind}\nstatus: accepted\ncreated: 2026-07-20\n---\n\n# {id}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    fn harvested_ids(root: &Path) -> Vec<String> {
+        harvest(root).into_iter().map(|h| h.id).collect()
+    }
+
+    #[test]
+    fn harvest_retains_every_claimant_while_harvest_ids_collapses() {
+        // The first-wins map is a caller-boundary compatibility collapse
+        // (task 23 owns its replacement); the harvest itself must keep
+        // every claimant.
+        let tmp = tempfile::tempdir().unwrap();
+        seed_md(
+            tmp.path(),
+            "archaeology/decisions",
+            "0001-a.md",
+            "dec-x",
+            "decision",
+        );
+        seed_md(
+            tmp.path(),
+            "archaeology/notes",
+            "0001-b.md",
+            "dec-x",
+            "decision",
+        );
+
+        assert_eq!(harvested_ids(tmp.path()), vec!["dec-x", "dec-x"]);
+        assert_eq!(harvest_ids(tmp.path()).len(), 1);
+    }
+
+    #[test]
+    fn harvest_skips_oversized_files_through_the_bounded_seam() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed_md(
+            tmp.path(),
+            "archaeology/decisions",
+            "0001-a.md",
+            "dec-fine",
+            "decision",
+        );
+        let mut oversized = "---\nid: dec-huge\nkind: decision\n---\n\n# Huge\n".to_string();
+        oversized.push_str(&"x".repeat(crate::read::MAX_ARTIFACT_BYTES as usize));
+        fs::write(
+            tmp.path().join("archaeology/decisions/0002-huge.md"),
+            &oversized,
+        )
+        .unwrap();
+
+        assert_eq!(harvested_ids(tmp.path()), vec!["dec-fine"]);
+    }
+
+    #[cfg(unix)]
+    mod symlink_boundary {
+        use super::*;
+        use std::os::unix::fs::symlink;
+
+        #[test]
+        fn harvest_never_descends_a_symlinked_directory() {
+            // Thread 4 claim 4: an external archaeology tree reachable
+            // only through a directory symlink must not enter the
+            // verification universe.
+            let tmp = tempfile::tempdir().unwrap();
+            seed_md(
+                tmp.path(),
+                "archaeology/decisions",
+                "0001-a.md",
+                "dec-local",
+                "decision",
+            );
+            let outside = tempfile::tempdir().unwrap();
+            seed_md(
+                outside.path(),
+                "external-arch",
+                "0001-b.md",
+                "dec-external-authority",
+                "decision",
+            );
+            symlink(
+                outside.path().join("external-arch"),
+                tmp.path().join("archaeology/imported"),
+            )
+            .unwrap();
+
+            assert_eq!(harvested_ids(tmp.path()), vec!["dec-local"]);
+        }
+
+        #[test]
+        fn harvest_never_reads_a_symlinked_file() {
+            let tmp = tempfile::tempdir().unwrap();
+            seed_md(
+                tmp.path(),
+                "archaeology/decisions",
+                "0001-a.md",
+                "dec-local",
+                "decision",
+            );
+            let outside = tempfile::tempdir().unwrap();
+            seed_md(
+                outside.path(),
+                "elsewhere",
+                "0001-b.md",
+                "dec-outside",
+                "decision",
+            );
+            symlink(
+                outside.path().join("elsewhere/0001-b.md"),
+                tmp.path().join("archaeology/decisions/0002-b.md"),
+            )
+            .unwrap();
+
+            assert_eq!(harvested_ids(tmp.path()), vec!["dec-local"]);
+        }
+
+        #[test]
+        fn harvest_ignores_ancestor_loops_without_a_visited_set() {
+            // A link back to an ancestor is simply never followed, so the
+            // walk cannot cycle regardless of canonicalization.
+            let tmp = tempfile::tempdir().unwrap();
+            seed_md(
+                tmp.path(),
+                "archaeology/decisions",
+                "0001-a.md",
+                "dec-local",
+                "decision",
+            );
+            symlink(
+                tmp.path().join("archaeology"),
+                tmp.path().join("archaeology/loop"),
+            )
+            .unwrap();
+
+            assert_eq!(harvested_ids(tmp.path()), vec!["dec-local"]);
+        }
+
+        #[test]
+        fn harvest_ignores_a_symlinked_archaeology_root() {
+            let tmp = tempfile::tempdir().unwrap();
+            let outside = tempfile::tempdir().unwrap();
+            seed_md(
+                outside.path(),
+                "tree",
+                "0001-a.md",
+                "dec-outside",
+                "decision",
+            );
+            symlink(outside.path().join("tree"), tmp.path().join("archaeology")).unwrap();
+
+            assert!(harvested_ids(tmp.path()).is_empty());
         }
     }
 
